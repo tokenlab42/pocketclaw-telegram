@@ -200,6 +200,14 @@ export interface PendingApproval {
   options_json: string;
 }
 
+// ── Sub-agent groups ──
+
+export interface SubAgentGroup {
+  parent_agent_group_id: string;
+  child_agent_group_id: string;
+  role: string; // 'slides' | 'researcher'
+}
+
 // ── Agent destinations (central DB) ──
 
 export interface AgentDestination {
