@@ -54,7 +54,11 @@ vi.mock('./user-dm.js', () => ({
 
 vi.mock('../../config.js', async () => {
   const actual = await vi.importActual('../../config.js');
-  return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-channel-approval' };
+  return {
+    ...actual,
+    DATA_DIR: '/tmp/nanoclaw-test-channel-approval',
+    GROUPS_DIR: '/tmp/nanoclaw-test-channel-approval/groups',
+  };
 });
 
 const TEST_DIR = '/tmp/nanoclaw-test-channel-approval';
@@ -468,5 +472,28 @@ describe('no-owner / no-agent failure modes', () => {
     expect(deliverMock).not.toHaveBeenCalled();
     const count = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number }).c;
     expect(count).toBe(0);
+  });
+});
+
+describe('createNewAgentGroup', () => {
+  it('wires a personal Chroma collection on the new group', async () => {
+    const { createNewAgentGroup } = await import('./channel-approval.js');
+    const { getAgentGroup } = await import('../../db/agent-groups.js');
+    const { getContainerConfig } = await import('../../db/container-configs.js');
+    const { CHROMA_MCP_SERVER } = await import('../../chroma-onboarding.js');
+
+    const ag = createNewAgentGroup('Nova');
+
+    const stored = getAgentGroup(ag.id)!;
+    expect(typeof stored.chroma_collection_id).toBe('string');
+    expect(stored.chroma_collection_id).toBeTruthy();
+
+    const config = getContainerConfig(ag.id)!;
+    const servers = JSON.parse(config.mcp_servers) as Record<string, unknown>;
+    expect(servers.chroma).toEqual(CHROMA_MCP_SERVER);
+
+    const claudeLocal = fs.readFileSync(`${TEST_DIR}/groups/${ag.folder}/CLAUDE.local.md`, 'utf-8');
+    expect(claudeLocal).toContain(stored.chroma_collection_id as string);
+    expect(claudeLocal).toContain('`news`');
   });
 });
