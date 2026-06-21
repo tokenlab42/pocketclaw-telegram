@@ -39,6 +39,8 @@ import {
   CONNECT_PREFIX,
   createNewAgentGroup,
   NEW_AGENT_VALUE,
+  PROVISION_PERSONAL_VALUE,
+  provisionPersonalAgent,
   REJECT_VALUE,
   requestChannelApproval,
 } from './channel-approval.js';
@@ -49,7 +51,7 @@ import {
   updatePendingChannelApprovalCard,
 } from './db/pending-channel-approvals.js';
 import { deletePendingSenderApproval, getPendingSenderApproval } from './db/pending-sender-approvals.js';
-import { hasAdminPrivilege } from './db/user-roles.js';
+import { grantRole, hasAdminPrivilege } from './db/user-roles.js';
 import { getUser, upsertUser } from './db/users.js';
 import { requestSenderApproval } from './sender-approval.js';
 import { ensureUserDm } from './user-dm.js';
@@ -107,6 +109,23 @@ function safeParseContent(raw: string): { text?: string; sender?: string; sender
     return JSON.parse(raw);
   } catch {
     return { text: raw };
+  }
+}
+
+/**
+ * Best-effort plain-text DM to a user (by namespaced user id). Resolves their
+ * DM channel via the user_dms cache and sends through the delivery adapter.
+ * Swallows errors — callers use this for confirmations, not control flow.
+ */
+async function dmApprover(userId: string, text: string): Promise<void> {
+  try {
+    const adapter = getDeliveryAdapter();
+    if (!adapter) return;
+    const dm = await ensureUserDm(userId);
+    if (!dm) return;
+    await adapter.deliver(dm.channel_type, dm.platform_id, null, 'chat-sdk', JSON.stringify({ text }));
+  } catch (err) {
+    log.warn('dmApprover delivery failed', { userId, err });
   }
 }
 
@@ -336,6 +355,93 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
       messagingGroupId: row.messaging_group_id,
       approverId,
     });
+    return true;
+  }
+
+  // ── Provision personal agent — create a NEW agent owned by the sender ──
+  if (payload.value === PROVISION_PERSONAL_VALUE) {
+    let event: InboundEvent;
+    try {
+      event = JSON.parse(row.original_message) as InboundEvent;
+    } catch (err) {
+      log.error('Personal-agent provisioning: failed to parse stored event', {
+        messagingGroupId: row.messaging_group_id,
+        err,
+      });
+      deletePendingChannelApproval(row.messaging_group_id);
+      return true;
+    }
+
+    const senderUserId = extractAndUpsertUser(event);
+    if (!senderUserId) {
+      log.warn('Personal-agent provisioning: could not resolve sender from event', {
+        messagingGroupId: row.messaging_group_id,
+      });
+      await dmApprover(row.approver_user_id, '⚠️ Could not identify the requesting user — provisioning aborted.');
+      deletePendingChannelApproval(row.messaging_group_id);
+      return true;
+    }
+
+    const senderUser = getUser(senderUserId);
+    const displayName = senderUser?.display_name?.trim() || 'User';
+    const agentName = `${displayName}'s Assistant`;
+    const now = new Date().toISOString();
+
+    const ag = provisionPersonalAgent(agentName);
+
+    // The sender owns their own agent: scoped admin (full self-customize +
+    // sub-agents over THIS group only) + membership so the access gate passes.
+    grantRole({
+      user_id: senderUserId,
+      role: 'admin',
+      agent_group_id: ag.id,
+      granted_by: approverId,
+      granted_at: now,
+    });
+    addMember({
+      user_id: senderUserId,
+      agent_group_id: ag.id,
+      added_by: approverId,
+      added_at: now,
+    });
+
+    // Wire the sender's DM to their new agent (respond-to-everything in a DM).
+    const mgaId = `mga-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    createMessagingGroupAgent({
+      id: mgaId,
+      messaging_group_id: row.messaging_group_id,
+      agent_group_id: ag.id,
+      engage_mode: 'pattern',
+      engage_pattern: '.',
+      sender_scope: 'known',
+      ignored_message_policy: 'accumulate',
+      session_mode: 'shared',
+      priority: 0,
+      created_at: now,
+    });
+
+    log.info('Personal agent provisioned', {
+      messagingGroupId: row.messaging_group_id,
+      agentGroupId: ag.id,
+      agentName,
+      ownerUserId: senderUserId,
+      approverId,
+    });
+
+    deletePendingChannelApproval(row.messaging_group_id);
+
+    // Replay the original message → wakes the new container, which reads its
+    // onboarding instructions and greets the user.
+    try {
+      await routeInbound(event);
+    } catch (err) {
+      log.error('Personal-agent provisioning: failed to replay message', {
+        messagingGroupId: row.messaging_group_id,
+        err,
+      });
+    }
+
+    await dmApprover(row.approver_user_id, `✅ Provisioned personal agent "${agentName}" for ${displayName}.`);
     return true;
   }
 
