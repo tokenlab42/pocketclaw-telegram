@@ -44,9 +44,19 @@
  *   - Approver has no reachable DM.
  *   - Delivery adapter missing.
  */
+import { randomUUID } from 'crypto';
+
 import { normalizeOptions, type NormalizedOption, type RawOption } from '../../channels/ask-question.js';
-import { createAgentGroup, getAgentGroup, getAgentGroupByFolder, getAllAgentGroups } from '../../db/agent-groups.js';
+import {
+  createAgentGroup,
+  getAgentGroup,
+  getAgentGroupByFolder,
+  getAllAgentGroups,
+  updateAgentGroup,
+} from '../../db/agent-groups.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
+import { CHROMA_MCP_SERVER, chromaInstructions } from '../../chroma-onboarding.js';
+import { addMcpServer } from '../../db/container-configs.js';
 import { getMessagingGroup, updateMessagingGroup } from '../../db/messaging-groups.js';
 import { getDeliveryAdapter } from '../../delivery.js';
 import { initGroupFilesystem } from '../../group-init.js';
@@ -291,7 +301,11 @@ export function createNewAgentGroup(name: string): AgentGroup {
     created_at: new Date().toISOString(),
   });
 
+  const collectionId = randomUUID();
+  updateAgentGroup(agId, { chroma_collection_id: collectionId });
+
   const ag = getAgentGroup(agId)!;
-  initGroupFilesystem(ag);
+  initGroupFilesystem(ag, { instructions: chromaInstructions(collectionId) });
+  addMcpServer(ag.id, 'chroma', CHROMA_MCP_SERVER);
   return ag;
 }

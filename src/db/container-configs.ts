@@ -1,3 +1,4 @@
+import type { McpServerConfig } from '../container-config.js';
 import type { ContainerConfigRow } from '../types.js';
 import { getDb } from './connection.js';
 
@@ -90,6 +91,15 @@ export function updateContainerConfigJson(
   getDb()
     .prepare(`UPDATE container_configs SET ${column} = ?, updated_at = ? WHERE agent_group_id = ?`)
     .run(JSON.stringify(value), now, agentGroupId);
+}
+
+/** Add or replace a single MCP server entry on a group's config. */
+export function addMcpServer(agentGroupId: string, name: string, config: McpServerConfig): void {
+  const row = getContainerConfig(agentGroupId);
+  if (!row) throw new Error(`No container config for group: ${agentGroupId}`);
+  const servers = JSON.parse(row.mcp_servers) as Record<string, McpServerConfig>;
+  servers[name] = config;
+  updateContainerConfigJson(agentGroupId, 'mcp_servers', servers);
 }
 
 export function deleteContainerConfig(agentGroupId: string): void {
