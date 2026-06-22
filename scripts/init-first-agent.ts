@@ -30,12 +30,12 @@
  * For direct-addressable channels (telegram, whatsapp, etc.), --platform-id
  * is typically the same as the handle in --user-id, with the channel prefix.
  */
-import fs from 'fs';
+import { randomUUID } from 'crypto';
 import net from 'net';
 import path from 'path';
 
-import { DATA_DIR, GROUPS_DIR } from '../src/config.js';
-import { createAgentGroup, getAgentGroupByFolder } from '../src/db/agent-groups.js';
+import { DATA_DIR } from '../src/config.js';
+import { createAgentGroup, getAgentGroupByFolder, updateAgentGroup } from '../src/db/agent-groups.js';
 import { initDb } from '../src/db/connection.js';
 import {
   createMessagingGroup,
@@ -48,7 +48,9 @@ import { normalizeName } from '../src/modules/agent-to-agent/db/agent-destinatio
 import { addMember } from '../src/modules/permissions/db/agent-group-members.js';
 import { getUserRoles, grantRole } from '../src/modules/permissions/db/user-roles.js';
 import { upsertUser } from '../src/modules/permissions/db/users.js';
-import { ensureContainerConfig, updateContainerConfigScalars } from '../src/db/container-configs.js';
+import { addMcpServer, updateContainerConfigScalars } from '../src/db/container-configs.js';
+import { CHROMA_MCP_SERVER, chromaInstructions } from '../src/chroma-onboarding.js';
+import { initGroupFilesystem } from '../src/group-init.js';
 import { namespacedPlatformId } from '../src/platform-id.js';
 import type { AgentGroup, MessagingGroup } from '../src/types.js';
 
@@ -223,8 +225,13 @@ async function main(): Promise<void> {
     path.join(groupDir, '.seed.md'),
     `# ${args.agentName}\n\n` +
       `You are ${args.agentName}, a personal NanoClaw agent for ${args.displayName}. ` +
-      'When the user first reaches out (or you receive a system welcome prompt), introduce yourself briefly and invite them to chat. Keep replies concise.\n',
-  );
+      'When the user first reaches out (or you receive a system welcome prompt), introduce yourself briefly and invite them to chat. Keep replies concise.' +
+      (chromaCollectionId ? chromaInstructions(chromaCollectionId) : ''),
+  });
+  if (chromaCollectionId) {
+    addMcpServer(ag.id, 'chroma', CHROMA_MCP_SERVER);
+    console.log(`Wired personal Chroma collection: ${chromaCollectionId}`);
+  }
 
   // 2b. Assign the user a role for this agent group. The caller picks via
   // --role; the channel drivers default to 'owner' for the self-host case.

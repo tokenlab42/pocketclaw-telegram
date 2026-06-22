@@ -8,6 +8,7 @@ import http from 'http';
 import Database from 'better-sqlite3';
 
 import { getAllAgentGroups, getAgentGroup } from './db/agent-groups.js';
+import { getContainerConfig } from './db/container-configs.js';
 import { getSessionsByAgentGroup } from './db/sessions.js';
 import { getAllMessagingGroups, getMessagingGroupAgents } from './db/messaging-groups.js';
 import { getDestinations } from './modules/agent-to-agent/db/agent-destinations.js';
@@ -18,7 +19,6 @@ import { getUserDmsForUser } from './modules/permissions/db/user-dms.js';
 import { getActiveAdapters, getRegisteredChannelNames } from './channels/channel-registry.js';
 import { DATA_DIR, ASSISTANT_NAME } from './config.js';
 import { getDb } from './db/connection.js';
-import { getContainerConfig } from './db/container-configs.js';
 import { log } from './log.js';
 import { readEnvFile } from './env.js';
 
@@ -77,6 +77,7 @@ export async function startDashboard(): Promise<void> {
   startServer({ port, secret });
   startDashboardPusher({ port, secret, intervalMs: 60000 });
 }
+
 
 /** Fire-and-forget POST to the dashboard. */
 function postJson(config: PusherConfig, urlPath: string, data: unknown): void {
@@ -188,12 +189,16 @@ function collectAgentGroups() {
       )
       .all(g.id) as Array<Record<string, unknown>>;
 
+
+    const containerConfig = getContainerConfig(g.id);
+
+
     return {
       id: g.id,
       name: g.name,
       folder: g.folder,
-      agent_provider: g.agent_provider,
-      container_config: getContainerConfig(g.id) ?? null,
+      agent_provider: containerConfig?.provider ?? null,
+      container_config: containerConfig ?? null,
       sessionCount: sessions.length,
       runningSessions: running.length,
       wirings,

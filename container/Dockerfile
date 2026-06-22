@@ -17,11 +17,15 @@ FROM node:22-slim
 # CJK fonts add ~200MB. Opt in only if you render Chinese/Japanese/Korean text.
 ARG INSTALL_CJK_FONTS=false
 
-# Pin versions for reproducibility. Bump deliberately — unpinned installs mean
+# Pin CLI versions for reproducibility. Bump deliberately — unpinned installs mean
 # every rebuild silently picks up the latest and can break in lockstep across
 # all users. The global Node CLIs (claude-code, agent-browser, vercel) are
 # pinned in cli-tools.json so a skill can add one with a json-merge; Bun (the
 # runtime) is pinned here because it installs from a different source.
+ARG CLAUDE_CODE_VERSION=2.1.154
+ARG AGENT_BROWSER_VERSION=latest
+ARG VERCEL_VERSION=52.2.1
+ARG CALENDAR_MCP_VERSION=2.6.1
 ARG BUN_VERSION=1.3.12
 ARG UV_VERSION=0.11.21
 
@@ -114,6 +118,9 @@ RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
 COPY cli-tools.json install-cli-tools.sh /tmp/
 RUN --mount=type=cache,target=/root/.cache/pnpm \
     sh /tmp/install-cli-tools.sh /tmp/cli-tools.json
+
+RUN --mount=type=cache,target=/root/.cache/pnpm \
+    pnpm install -g "@cocal/google-calendar-mcp@${CALENDAR_MCP_VERSION}"
 
 RUN --mount=type=cache,target=/root/.cache/pnpm \
     pnpm install -g "@cocal/google-calendar-mcp@${CALENDAR_MCP_VERSION}"
