@@ -3,16 +3,13 @@ import path from 'path';
 import { log } from './log.js';
 
 /**
- * Parse a .env file and return values for the requested keys.
+ * Parse the .env file and return values for the requested keys.
  * Does NOT load anything into process.env — callers decide what to
  * do with the values. This keeps secrets out of the process environment
  * so they don't leak to child processes.
- *
- * @param keys   Which keys to extract.
- * @param filePath  Path to the .env file. Defaults to `<cwd>/.env`.
  */
-export function readEnvFile(keys: string[], filePath?: string): Record<string, string> {
-  const envFile = filePath ?? path.join(process.cwd(), '.env');
+export function readEnvFile(keys: string[]): Record<string, string> {
+  const envFile = path.join(process.cwd(), '.env');
   let content: string;
   try {
     content = fs.readFileSync(envFile, 'utf-8');

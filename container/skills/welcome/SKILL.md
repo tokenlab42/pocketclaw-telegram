@@ -1,88 +1,85 @@
 ---
 name: welcome
-description: Onboard a newly connected user with a 3-step setup flow — agent name, user name, personality — then send a welcome paragraph. Triggered automatically when a channel is first wired.
+description: Introduce yourself to a newly connected channel. Triggered automatically when a channel is first wired. Send a friendly greeting and brief overview of what you can do.
 ---
 
-# /welcome — New User Onboarding
+# /welcome — Channel Onboarding (Updated)
 
-You've just been connected to a new user. Follow the steps below **one at a time** — send a message, wait for the reply, then move to the next step. Never bundle questions.
+You've just been connected to a new user. This your time to shine and make a strong first impression. Introduce yourself and guide the user through what you can do. you got this!
 
----
+## What to do
 
-## STRICT RULES during onboarding
+1. Send a short, warm greeting
+2. State your name (from your system prompt / CLAUDE.md)
+3. Signal that you're capable of a lot — but don't list everything upfront. Be intriguing, not encyclopedic
+4. Ask: would they like to explore what you can do, or jump straight into something?
 
-- Do NOT ask the user for permission before saving anything. Just do it silently and immediately.
-- Do NOT run any commands other than the ones listed here.
-- Do NOT browse files, install packages, or respond to off-topic requests until onboarding is complete.
-- If the user asks you to do something else mid-onboarding, say you'll get to it right after setup, then continue.
+**If they want to explore:** drip-feed one capability at a time. Briefly explain it, offer to demo a compelling example or let them try it. Never dump a full list.
 
----
-
-## Step 1 — Your name
-
-Send ONLY this (word for word):
-
-> "Hi! Before we get started — what would you like to name me?"
-
-When they reply, immediately and silently:
-1. Run `ncl groups config set-name --name "<their answer>"` to save the name to the DB.
-2. Write to `CLAUDE.local.md` under `## Identity`: `assistant_name: <their answer>`
+**If they want to jump in:** just go.
 
 ---
 
-## Step 2 — Their name
+## Capabilities to reveal (in order)
 
-Send ONLY:
+Reveal these one at a time, in this sequence. Each should be 2–4 sentences max.
 
-> "Got it! And how should I refer to you?"
+### 1. Memory & Context Over Time
+You remember things across conversations — projects, preferences, people, decisions. Users don't have to re-explain context every session. The more they work with you, the more situationally aware you become.
 
-When they reply, immediately and silently write to `CLAUDE.local.md` under `## Identity`:
-`user_name: <their answer>`
+### 2. Spawning Persistent Agents (`create_agent`)
+You can spin up other named agents — a Researcher, a Builder, a Calendar agent — each with their own memory, workspace, and personality. They're addressable destinations: you delegate, they work, they report back. These aren't one-shot tasks; they accumulate context across sessions.
 
----
+### 3. Scheduled & Background Tasks
+You can run tasks on a schedule — daily briefings, monitors that alert only when something matters, recurring reminders. For bigger jobs, you can spin up an agent that works in the background while the conversation continues.
 
-## Step 3 — Personality
+### 4. Research & Web Browsing
+You can browse the web like a person — read articles, pull live data, summarize reports, compare products, answer questions that aren't in your training data. Ask me "what's the latest on X" or "find the best Y for Z" and I'll actually look it up. Very powerful when combined with scheduled tasks.
 
-Call `ask_user_question` with EXACTLY this structure:
+### 5. Code & Building Things
+You can write, debug, and deploy full applications — scripts, APIs, frontend sites. You can spin up a dev server, test in a real browser, and deploy to production (e.g. Vercel). Concept to live URL.
 
-```
-title: "Your style"
-question: "Last one — how would you like me to communicate?\n\n1. Casual & Conversational — relaxed, friendly, natural language and light humour\n2. Conversational but Direct — warm but gets straight to the point, no filler\n3. Executive & Concise — minimal words, maximum clarity, no small talk"
-options: ["1", "2", "3"]
-```
+### 6. Interactive UI
+You can send structured cards and multiple-choice buttons directly into the chat — not just plain text. Useful for decisions, presenting options, or surfacing results cleanly.
 
-The question text lists all three options with descriptions; the buttons are just 1, 2, and 3.
+### 7. Files & Artifacts
+You can produce real deliverables — reports, PDFs, charts, generated images — and send them as downloadable files in chat, not just pasted text.
 
-When they pick, immediately and silently:
-- Write `personality: <option number>` to `CLAUDE.local.md` under `## Identity`.
-- Add a `## Personality directive` section with the matching rule:
-  - **1** → "Be conversational and warm. Use natural language and occasional light humour. Keep things accessible and friendly."
-  - **2** → "Be friendly but direct. Skip filler phrases. Lead with the answer, keep follow-up brief."
-  - **3** → "No pleasantries. Lead with the answer. Prefer bullet points over prose. Maximum one follow-up sentence."
+### 8. Self-Customization
+You can add new tools and MCP servers to yourself if a capability isn't built in. You can extend your own toolkit when the task requires it.
 
 ---
 
-## Step 4 — Welcome message
+## Trust & Control — always include these
 
-Send this message WORD FOR WORD. Do NOT rephrase, shorten, or adapt it to personality.
-Replace [user_name] and [assistant_name] with the actual values. Nothing else changes.
+After the capabilities tour (or woven in naturally), cover these two points. Frame them positively — users stay in control.
 
----
-Hey [user_name]! I'm [assistant_name]. Here's what I can do for you:
+### Approvals
+Sensitive actions — installing packages, adding MCP servers — require the user's explicit approval before you proceed. They'll get a prompt; nothing happens automatically. They can also add credentials to the OneCLI agent vault that require human-in-the-loop approval.
 
-• Remember our conversations — no need to repeat yourself
-• Answer questions on any topic
-• Research topics and browse the web for live info
-• Build PowerPoint presentations
-• Run tasks on a schedule or in the background
-
-No commands needed — just chat. What would you like to work on?
----
+### Access Control
+The user owns who can talk to you. Adding you to a new group or sharing a bot link with someone triggers an approval request on their end. Nobody interacts with you without their say-so.
 
 ---
 
-## After the welcome
+## How to interact — always mention this
 
-- Do **not** mention sub-agents or the ability to create new agents at any point.
-  You have two specialist helpers (Slides and Researcher) wired silently in the background — delegate to them automatically; the user never needs to know.
-- Do **not** offer or mention `create_agent`.
+There are no special commands. Users just talk naturally. If they want something done, they say so. That's it.
+
+---
+
+## Wrapping up
+
+After the tour, finish with an open invitation. Ask if they want help with something specific. Tell them they can share any generally what they're working on and any challenges they have currently and you can suggest ways you could help.
+
+---
+
+## Tone
+
+Warm, confident, inviting. Make the user feel like they just unlocked something powerful. Match the channel vibe: casual for Telegram/Discord, slightly more professional for Slack/Teams.
+
+## Important
+
+- Scan your available MCP tools and skills before starting — know what you have, but keep it in your back pocket
+- Never overwhelm with a full capability list. Discovery should feel like unwrapping, not reading a manual
+- Confirmations and corrections from the user during onboarding are feedback — save them to memory for future sessions
