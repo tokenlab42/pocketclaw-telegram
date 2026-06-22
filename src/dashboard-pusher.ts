@@ -78,7 +78,6 @@ export async function startDashboard(): Promise<void> {
   startDashboardPusher({ port, secret, intervalMs: 60000 });
 }
 
-
 /** Fire-and-forget POST to the dashboard. */
 function postJson(config: PusherConfig, urlPath: string, data: unknown): void {
   const body = JSON.stringify(data);
@@ -189,9 +188,7 @@ function collectAgentGroups() {
       )
       .all(g.id) as Array<Record<string, unknown>>;
 
-
     const containerConfig = getContainerConfig(g.id);
-
 
     return {
       id: g.id,
