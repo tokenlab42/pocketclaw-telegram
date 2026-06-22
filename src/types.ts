@@ -36,6 +36,14 @@ export interface MessagingGroup {
   id: string;
   channel_type: string;
   platform_id: string;
+  /**
+   * Adapter-instance name. Defaults to channel_type (the "default instance").
+   * Column is NOT NULL (migration 016 backfills instance = channel_type);
+   * optional on the TS type per the denied_at convention so fixtures that
+   * build MessagingGroup objects don't need updating — createMessagingGroup
+   * stamps the default.
+   */
+  instance?: string;
   name: string | null;
   is_group: number; // 0 | 1
   unknown_sender_policy: UnknownSenderPolicy;
@@ -198,6 +206,8 @@ export interface PendingApproval {
   status: 'pending' | 'approved' | 'rejected' | 'expired';
   title: string;
   options_json: string;
+  /** When set, only this exact user may resolve the approval. */
+  approver_user_id: string | null;
 }
 
 // ── Sub-agent groups ──
@@ -215,5 +225,12 @@ export interface AgentDestination {
   local_name: string;
   target_type: 'channel' | 'agent';
   target_id: string;
+  created_at: string;
+}
+
+export interface AgentMessagePolicy {
+  from_agent_group_id: string;
+  to_agent_group_id: string;
+  approver: string;
   created_at: string;
 }

@@ -464,7 +464,8 @@ export function provisionPersonalAgent(name: string): AgentGroup {
   });
 
   const ag = getAgentGroup(agId)!;
-  initGroupFilesystem(ag, { instructions: buildOnboardingInstructions() });
-  provisionSubAgents(agId, folder, name);
+  // Channel-approved groups get the built-in default provider (claude); the
+  // operator flips a group with `ncl groups config update --provider`.
+  initGroupFilesystem(ag);
   return ag;
 }
