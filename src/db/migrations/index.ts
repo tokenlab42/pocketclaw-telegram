@@ -13,6 +13,7 @@ import { migration012 } from './012-channel-registration.js';
 import { migration013 } from './013-approval-render-metadata.js';
 import { migration014 } from './014-container-configs.js';
 import { migration015 } from './015-cli-scope.js';
+import { migration017 } from './017-sub-agent-groups.js';
 import { migration016 } from './016-messaging-group-instance.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
@@ -50,6 +51,7 @@ export const migrations: Migration[] = [
   migration014,
   migration015,
   migration016,
+  migration017,
 ];
 
 /** Row shape of PRAGMA foreign_key_check. Child rowids are stable across a

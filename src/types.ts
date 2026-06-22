@@ -7,6 +7,8 @@ export interface AgentGroup {
   /** @deprecated Use container_configs.provider instead. */
   agent_provider: string | null;
   created_at: string;
+  /** UUID of this group's personal Chroma collection. Set once at onboarding; null if never wired. */
+  chroma_collection_id?: string | null;
 }
 
 /** Per-agent-group container runtime config. Source of truth in the DB;
@@ -206,6 +208,14 @@ export interface PendingApproval {
   options_json: string;
   /** When set, only this exact user may resolve the approval. */
   approver_user_id: string | null;
+}
+
+// ── Sub-agent groups ──
+
+export interface SubAgentGroup {
+  parent_agent_group_id: string;
+  child_agent_group_id: string;
+  role: string; // 'slides' | 'researcher'
 }
 
 // ── Agent destinations (central DB) ──

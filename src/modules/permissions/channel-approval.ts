@@ -44,9 +44,20 @@
  *   - Approver has no reachable DM.
  *   - Delivery adapter missing.
  */
+import { randomUUID } from 'crypto';
+
 import { normalizeOptions, type NormalizedOption, type RawOption } from '../../channels/ask-question.js';
-import { createAgentGroup, getAgentGroup, getAgentGroupByFolder, getAllAgentGroups } from '../../db/agent-groups.js';
+import {
+  createAgentGroup,
+  getAgentGroup,
+  getAgentGroupByFolder,
+  getAllAgentGroups,
+  updateAgentGroup,
+} from '../../db/agent-groups.js';
+import { createContainerConfig } from '../../db/container-configs.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
+import { CHROMA_MCP_SERVER, chromaInstructions } from '../../chroma-onboarding.js';
+import { addMcpServer } from '../../db/container-configs.js';
 import { getMessagingGroup, updateMessagingGroup } from '../../db/messaging-groups.js';
 import { getDeliveryAdapter } from '../../delivery.js';
 import { initGroupFilesystem } from '../../group-init.js';
@@ -56,6 +67,7 @@ import type { AgentGroup } from '../../types.js';
 import { pickApprovalDelivery, pickApprover } from '../approvals/primitive.js';
 import { createPendingChannelApproval, hasInFlightChannelApproval } from './db/pending-channel-approvals.js';
 import { hasAdminPrivilege } from './db/user-roles.js';
+import { provisionSubAgents } from '../sub-agents/provision.js';
 
 // ── Value constants (response handler in index.ts parses these) ──
 
@@ -63,6 +75,10 @@ export const CONNECT_PREFIX = 'connect:';
 export const NEW_AGENT_VALUE = 'new_agent';
 export const CHOOSE_EXISTING_VALUE = 'choose_existing';
 export const REJECT_VALUE = 'reject';
+// Provision a brand-new PERSONAL agent owned by the requesting sender (not the
+// approver). The sender becomes scoped admin of their own agent group and gets
+// their own container; the agent self-onboards on first wake. DM-only.
+export const PROVISION_PERSONAL_VALUE = 'provision_personal';
 
 // ── Utilities ──
 
@@ -85,32 +101,54 @@ function visibleAgentGroupsForApprover(
   return agentGroups.filter((agentGroup) => hasAdminPrivilege(approverUserId, agentGroup.id));
 }
 
-function buildApprovalOptions(agentGroups: AgentGroup[], approverUserId?: string | null): RawOption[] {
+function buildApprovalOptions(
+  agentGroups: AgentGroup[],
+  approverUserId?: string | null,
+  ctx?: { isGroup?: boolean; senderName?: string },
+): RawOption[] {
   const visibleAgentGroups = visibleAgentGroupsForApprover(agentGroups, approverUserId);
   const options: RawOption[] = [];
-  if (visibleAgentGroups.length === 1) {
+
+  // Personal-agent provisioning is the primary multi-tenant path: give the new
+  // user their OWN agent + container, not a connection to one of the approver's.
+  // DM-only — "personal agent" has no meaning for a shared group chat.
+  if (!ctx?.isGroup) {
+    const who = ctx?.senderName ?? 'this user';
     options.push({
-      label: `Connect to ${visibleAgentGroups[0].name}`,
-      selectedLabel: `✅ Connected to ${visibleAgentGroups[0].name}`,
-      value: `${CONNECT_PREFIX}${visibleAgentGroups[0].id}`,
+      label: `✅ Approve (${who})`,
+      selectedLabel: `✅ Approved`,
+      value: PROVISION_PERSONAL_VALUE,
     });
-  } else if (visibleAgentGroups.length > 1) {
     options.push({
-      label: 'Choose existing agent',
-      selectedLabel: '📋 Choosing…',
-      value: CHOOSE_EXISTING_VALUE,
+      label: '❌ Reject',
+      selectedLabel: '❌ Rejected',
+      value: REJECT_VALUE,
+    });
+  } else {
+    if (visibleAgentGroups.length === 1) {
+      options.push({
+        label: `Connect to ${visibleAgentGroups[0].name}`,
+        selectedLabel: `✅ Connected to ${visibleAgentGroups[0].name}`,
+        value: `${CONNECT_PREFIX}${visibleAgentGroups[0].id}`,
+      });
+    } else if (visibleAgentGroups.length > 1) {
+      options.push({
+        label: 'Choose existing agent',
+        selectedLabel: '📋 Choosing…',
+        value: CHOOSE_EXISTING_VALUE,
+      });
+    }
+    options.push({
+      label: 'Connect new agent',
+      selectedLabel: '🆕 Connecting new agent…',
+      value: NEW_AGENT_VALUE,
+    });
+    options.push({
+      label: 'Reject',
+      selectedLabel: '🙅 Rejected',
+      value: REJECT_VALUE,
     });
   }
-  options.push({
-    label: 'Connect new agent',
-    selectedLabel: '🆕 Connecting new agent…',
-    value: NEW_AGENT_VALUE,
-  });
-  options.push({
-    label: 'Reject',
-    selectedLabel: '🙅 Rejected',
-    value: REJECT_VALUE,
-  });
   return options;
 }
 
@@ -204,7 +242,11 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
   const channelName = originMg?.name ?? null;
   const title = isGroup ? '📣 Bot mentioned in new channel' : '💬 New direct message';
   const question = buildQuestionText(isGroup, senderName, channelName, originChannelType);
-  const options = normalizeOptions(buildApprovalOptions(agentGroups, delivery.userId));
+  // Personal-agent provisioning is DM-only. Treat as a DM only when no group
+  // signal is present from any source (thread id, adapter flag, or the stored
+  // messaging-group row) — this matches how the wiring handler picks engage_mode.
+  const isDm = event.threadId === null && !event.message?.isGroup && originMg?.is_group !== 1;
+  const options = normalizeOptions(buildApprovalOptions(agentGroups, delivery.userId, { isGroup: !isDm, senderName }));
 
   createPendingChannelApproval({
     messaging_group_id: messagingGroupId,
@@ -289,6 +331,136 @@ export function createNewAgentGroup(name: string): AgentGroup {
     folder,
     agent_provider: null,
     created_at: new Date().toISOString(),
+  });
+
+  const collectionId = randomUUID();
+  updateAgentGroup(agId, { chroma_collection_id: collectionId });
+
+  const ag = getAgentGroup(agId)!;
+  initGroupFilesystem(ag, { instructions: chromaInstructions(collectionId) });
+  addMcpServer(ag.id, 'chroma', CHROMA_MCP_SERVER);
+  return ag;
+}
+
+/**
+ * Onboarding directive seeded into a freshly-provisioned personal agent's
+ * CLAUDE.local.md. On the agent's first wake it runs a structured 3-step
+ * onboarding, one question at a time, then persists all results.
+ */
+export function buildOnboardingInstructions(): string {
+  return [
+    '# Personal agent — onboarding pending',
+    '',
+    'You are a brand-new assistant just provisioned for a new user.',
+    'You have not been configured yet — this is your very first interaction.',
+    '',
+    '## STRICT RULES during onboarding',
+    '',
+    '- Ask ONE question, wait for the reply, then proceed. Never bundle questions.',
+    '- Do NOT ask the user for permission before saving anything. Just do it silently.',
+    '- Do NOT run any commands other than the ones listed below.',
+    '- Do NOT browse files, install packages, or do anything else until onboarding is complete.',
+    "- If the user asks you to do something else mid-onboarding, say you'll get to it right after setup, then continue.",
+    '',
+    '## Step 1 — Your name',
+    '',
+    'Send ONLY this (word for word):',
+    '  "Hi! Before we get started — what would you like to name me?"',
+    '',
+    'When they reply, immediately and silently:',
+    '  1. Run: `ncl groups config set-name --name "<their answer>"`',
+    '  2. Write to CLAUDE.local.md under `## Identity`:',
+    '     `assistant_name: <their answer>`',
+    '',
+    '## Step 2 — Their name',
+    '',
+    'Send ONLY:',
+    '  "Got it! And how should I refer to you?"',
+    '',
+    'When they reply, immediately and silently write to CLAUDE.local.md under `## Identity`:',
+    '  `user_name: <their answer>`',
+    '',
+    '## Step 3 — Personality',
+    '',
+    'Call `ask_user_question` with EXACTLY this:',
+    '  title: "Your style"',
+    '  question: "Last one — how would you like me to communicate?\\n\\n1. Casual & Conversational — relaxed, friendly, natural language and light humour\\n2. Conversational but Direct — warm but gets straight to the point, no filler\\n3. Executive & Concise — minimal words, maximum clarity, no small talk"',
+    '  options: ["1", "2", "3"]',
+    '',
+    'The question text lists all three options with descriptions; the buttons are just 1, 2, 3.',
+    '',
+    'When they pick, immediately and silently:',
+    '  - Write `personality: <option number>` to CLAUDE.local.md under `## Identity`.',
+    '  - Add a `## Personality directive` section with the matching rule:',
+    '    - 1 → "Be conversational and warm. Use natural language and occasional light humour. Keep things accessible and friendly."',
+    '    - 2 → "Be friendly but direct. Skip filler phrases. Lead with the answer, keep follow-up brief."',
+    '    - 3 → "No pleasantries. Lead with the answer. Prefer bullet points over prose. Maximum one follow-up sentence."',
+    '',
+    '## Step 4 — Welcome message',
+    '',
+    'Send this message WORD FOR WORD. Do NOT rephrase, shorten, or adapt it to personality.',
+    'Replace [user_name] and [assistant_name] with the actual values. Nothing else changes.',
+    '',
+    '---',
+    "Hey [user_name]! I'm [assistant_name]. Here's what I can do for you:",
+    '',
+    '• Remember our conversations — no need to repeat yourself',
+    '• Answer questions on any topic',
+    '• Research topics and browse the web for live info',
+    '• Build PowerPoint presentations',
+    '• Run tasks on a schedule or in the background',
+    '',
+    'No commands needed — just chat. What would you like to work on?',
+    '---',
+    '',
+    '## After the welcome',
+    '',
+    '- Remove this entire `# Personal agent — onboarding pending` block from CLAUDE.local.md.',
+    '- Do NOT mention sub-agents or the ability to create new agents at any point.',
+    '  You have two specialist helpers (Slides and Researcher) wired silently in the',
+    '  background — delegate to them automatically; the user never needs to know.',
+  ].join('\n');
+}
+
+/**
+ * Provision a brand-new PERSONAL agent group: same as createNewAgentGroup but
+ * seeds the onboarding directive so the agent self-onboards on first wake.
+ * The caller is responsible for granting the owning user a scoped-admin role,
+ * adding membership, and wiring the DM.
+ */
+export function provisionPersonalAgent(name: string): AgentGroup {
+  let folder = toFolder(name);
+  const baseFolder = folder;
+  let suffix = 2;
+  while (getAgentGroupByFolder(folder)) {
+    folder = `${baseFolder}-${suffix}`;
+    suffix++;
+  }
+
+  const agId = `ag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  createAgentGroup({
+    id: agId,
+    name,
+    folder,
+    agent_provider: null,
+    created_at: new Date().toISOString(),
+  });
+
+  createContainerConfig({
+    agent_group_id: agId,
+    provider: null,
+    model: 'claude-haiku-4-5-20251001',
+    effort: null,
+    image_tag: null,
+    assistant_name: null,
+    max_messages_per_prompt: null,
+    skills: JSON.stringify('all'),
+    mcp_servers: JSON.stringify({}),
+    packages_apt: JSON.stringify([]),
+    packages_npm: JSON.stringify([]),
+    additional_mounts: JSON.stringify([]),
+    cli_scope: 'group',
+    updated_at: new Date().toISOString(),
   });
 
   const ag = getAgentGroup(agId)!;
