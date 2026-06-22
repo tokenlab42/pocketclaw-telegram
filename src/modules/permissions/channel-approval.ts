@@ -54,6 +54,7 @@ import {
   getAllAgentGroups,
   updateAgentGroup,
 } from '../../db/agent-groups.js';
+import { createContainerConfig } from '../../db/container-configs.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
 import { CHROMA_MCP_SERVER, chromaInstructions } from '../../chroma-onboarding.js';
 import { addMcpServer } from '../../db/container-configs.js';
@@ -66,6 +67,7 @@ import type { AgentGroup } from '../../types.js';
 import { pickApprovalDelivery, pickApprover } from '../approvals/primitive.js';
 import { createPendingChannelApproval, hasInFlightChannelApproval } from './db/pending-channel-approvals.js';
 import { hasAdminPrivilege } from './db/user-roles.js';
+import { provisionSubAgents } from '../sub-agents/provision.js';
 
 // ── Value constants (response handler in index.ts parses these) ──
 
@@ -73,6 +75,10 @@ export const CONNECT_PREFIX = 'connect:';
 export const NEW_AGENT_VALUE = 'new_agent';
 export const CHOOSE_EXISTING_VALUE = 'choose_existing';
 export const REJECT_VALUE = 'reject';
+// Provision a brand-new PERSONAL agent owned by the requesting sender (not the
+// approver). The sender becomes scoped admin of their own agent group and gets
+// their own container; the agent self-onboards on first wake. DM-only.
+export const PROVISION_PERSONAL_VALUE = 'provision_personal';
 
 // ── Utilities ──
 
@@ -95,9 +101,26 @@ function visibleAgentGroupsForApprover(
   return agentGroups.filter((agentGroup) => hasAdminPrivilege(approverUserId, agentGroup.id));
 }
 
-function buildApprovalOptions(agentGroups: AgentGroup[], approverUserId?: string | null): RawOption[] {
+function buildApprovalOptions(
+  agentGroups: AgentGroup[],
+  approverUserId?: string | null,
+  ctx?: { isGroup?: boolean; senderName?: string },
+): RawOption[] {
   const visibleAgentGroups = visibleAgentGroupsForApprover(agentGroups, approverUserId);
   const options: RawOption[] = [];
+
+  // Personal-agent provisioning is the primary multi-tenant path: give the new
+  // user their OWN agent + container, not a connection to one of the approver's.
+  // DM-only — "personal agent" has no meaning for a shared group chat.
+  if (!ctx?.isGroup) {
+    const who = ctx?.senderName ?? 'this user';
+    options.push({
+      label: `🚀 Set up personal agent for ${who}`,
+      selectedLabel: `✅ Provisioning personal agent…`,
+      value: PROVISION_PERSONAL_VALUE,
+    });
+  }
+
   if (visibleAgentGroups.length === 1) {
     options.push({
       label: `Connect to ${visibleAgentGroups[0].name}`,
@@ -214,7 +237,11 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
   const channelName = originMg?.name ?? null;
   const title = isGroup ? '📣 Bot mentioned in new channel' : '💬 New direct message';
   const question = buildQuestionText(isGroup, senderName, channelName, originChannelType);
-  const options = normalizeOptions(buildApprovalOptions(agentGroups, delivery.userId));
+  // Personal-agent provisioning is DM-only. Treat as a DM only when no group
+  // signal is present from any source (thread id, adapter flag, or the stored
+  // messaging-group row) — this matches how the wiring handler picks engage_mode.
+  const isDm = event.threadId === null && !event.message?.isGroup && originMg?.is_group !== 1;
+  const options = normalizeOptions(buildApprovalOptions(agentGroups, delivery.userId, { isGroup: !isDm, senderName }));
 
   createPendingChannelApproval({
     messaging_group_id: messagingGroupId,
@@ -307,5 +334,79 @@ export function createNewAgentGroup(name: string): AgentGroup {
   const ag = getAgentGroup(agId)!;
   initGroupFilesystem(ag, { instructions: chromaInstructions(collectionId) });
   addMcpServer(ag.id, 'chroma', CHROMA_MCP_SERVER);
+  return ag;
+}
+
+/**
+ * Onboarding directive seeded into a freshly-provisioned personal agent's
+ * CLAUDE.local.md. On the agent's first wake it runs a short self-onboarding
+ * conversation and persists the result via the `self-customize` skill.
+ */
+export function buildOnboardingInstructions(): string {
+  return [
+    '# Personal agent — onboarding pending',
+    '',
+    'You are a brand-new personal NanoClaw assistant that was just provisioned for a',
+    'new user. You have not been configured yet — this is your very first interaction.',
+    '',
+    'On your FIRST reply, run a short, friendly onboarding conversation. Collect, over',
+    'a couple of messages (do not interrogate):',
+    "  1. The user's name — how they'd like to be addressed.",
+    "  2. What they'd like to name you (your assistant name).",
+    '  3. The personality / tone they want, and what they mainly want help with.',
+    '',
+    'Once you have their answers, use the `/self-customize` skill to permanently set',
+    "your assistant name, personality, and the user's name/preferences in your own",
+    'configuration. Confirm back briefly once done, then start helping them.',
+    '',
+    'Remove this onboarding block (via /self-customize) once onboarding is complete so',
+    'it does not run again.',
+  ].join('\n');
+}
+
+/**
+ * Provision a brand-new PERSONAL agent group: same as createNewAgentGroup but
+ * seeds the onboarding directive so the agent self-onboards on first wake.
+ * The caller is responsible for granting the owning user a scoped-admin role,
+ * adding membership, and wiring the DM.
+ */
+export function provisionPersonalAgent(name: string): AgentGroup {
+  let folder = toFolder(name);
+  const baseFolder = folder;
+  let suffix = 2;
+  while (getAgentGroupByFolder(folder)) {
+    folder = `${baseFolder}-${suffix}`;
+    suffix++;
+  }
+
+  const agId = `ag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  createAgentGroup({
+    id: agId,
+    name,
+    folder,
+    agent_provider: null,
+    created_at: new Date().toISOString(),
+  });
+
+  createContainerConfig({
+    agent_group_id: agId,
+    provider: null,
+    model: 'claude-haiku-4-5-20251001',
+    effort: null,
+    image_tag: null,
+    assistant_name: null,
+    max_messages_per_prompt: null,
+    skills: JSON.stringify('all'),
+    mcp_servers: JSON.stringify({}),
+    packages_apt: JSON.stringify([]),
+    packages_npm: JSON.stringify([]),
+    additional_mounts: JSON.stringify([]),
+    cli_scope: 'group',
+    updated_at: new Date().toISOString(),
+  });
+
+  const ag = getAgentGroup(agId)!;
+  initGroupFilesystem(ag, { instructions: buildOnboardingInstructions() });
+  provisionSubAgents(agId, folder, name);
   return ag;
 }
