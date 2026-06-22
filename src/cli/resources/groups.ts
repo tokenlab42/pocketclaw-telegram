@@ -8,6 +8,7 @@ import {
   getContainerConfig,
   updateContainerConfigScalars,
   updateContainerConfigJson,
+  addMcpServer,
 } from '../../db/container-configs.js';
 import type { ContainerConfigRow } from '../../types.js';
 import { registerResource } from '../crud.js';
@@ -57,6 +58,13 @@ registerResource({
       required: true,
     },
     { name: 'created_at', type: 'string', description: 'Auto-set.', generated: true },
+    {
+      name: 'chroma_collection_id',
+      type: 'string',
+      description:
+        "UUID of this group's personal Chroma collection. Set once at onboarding by /init-first-agent; null for groups created without it.",
+      generated: true,
+    },
   ],
   // `delete` is intentionally not in `operations` — the generic single-table
   // DELETE violates FK constraints (see #2525). The cascading handler is
@@ -269,15 +277,14 @@ registerResource({
         const row = getContainerConfig(id);
         if (!row) throw new Error(`No container config for group: ${id}`);
 
-        const servers = JSON.parse(row.mcp_servers) as Record<string, McpServerConfig>;
-        servers[name] = {
+        const config: McpServerConfig = {
           command,
           args: args.args ? (JSON.parse(args.args as string) as string[]) : [],
           env: args.env ? (JSON.parse(args.env as string) as Record<string, string>) : {},
         };
-        updateContainerConfigJson(id, 'mcp_servers', servers);
+        addMcpServer(id, name, config);
 
-        return { added: name, servers };
+        return { added: name, servers: { ...JSON.parse(row.mcp_servers), [name]: config } };
       },
     },
     'config remove-mcp-server': {

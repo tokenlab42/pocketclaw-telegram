@@ -7,6 +7,8 @@ export interface AgentGroup {
   /** @deprecated Use container_configs.provider instead. */
   agent_provider: string | null;
   created_at: string;
+  /** UUID of this group's personal Chroma collection. Set once at onboarding; null if never wired. */
+  chroma_collection_id?: string | null;
 }
 
 /** Per-agent-group container runtime config. Source of truth in the DB;
