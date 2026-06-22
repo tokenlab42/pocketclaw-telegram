@@ -7,7 +7,6 @@
 import path from 'path';
 
 import { backfillContainerConfigs } from './backfill-container-configs.js';
-import { readEnvFile } from './env.js';
 import { DATA_DIR } from './config.js';
 import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js';
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
@@ -183,18 +182,9 @@ async function main(): Promise<void> {
   // 7. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
 
-  // 8. Dashboard (optional)
-  const dashboardEnv = readEnvFile(['DASHBOARD_SECRET', 'DASHBOARD_PORT']);
-  const dashboardSecret = process.env.DASHBOARD_SECRET || dashboardEnv.DASHBOARD_SECRET;
-  const dashboardPort = parseInt(process.env.DASHBOARD_PORT || dashboardEnv.DASHBOARD_PORT || '3100', 10);
-  if (dashboardSecret) {
-    const { startDashboard } = await import('@nanoco/nanoclaw-dashboard');
-    const { startDashboardPusher } = await import('./dashboard-pusher.js');
-    startDashboard({ port: dashboardPort, secret: dashboardSecret });
-    startDashboardPusher({ port: dashboardPort, secret: dashboardSecret, intervalMs: 60000 });
-  } else {
-    log.info('Dashboard disabled (no DASHBOARD_SECRET)');
-  }
+  // Dashboard (optional; no-ops without DASHBOARD_SECRET)
+  const { startDashboard } = await import('./dashboard-pusher.js');
+  await startDashboard();
 
   log.info('NanoClaw running');
 }

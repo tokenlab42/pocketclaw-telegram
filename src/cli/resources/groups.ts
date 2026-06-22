@@ -217,6 +217,24 @@ registerResource({
         return presentConfig(row);
       },
     },
+    'config set-name': {
+      access: 'open',
+      description:
+        'Set the assistant name for this agent group without requiring approval. ' +
+        'Only updates assistant_name — use `config update` for all other fields. ' +
+        'Use --name <name> (--id is auto-filled for group-scoped agents).',
+      handler: async (args) => {
+        const id = args.id as string;
+        if (!id) throw new Error('--id is required');
+        const name = args.name as string;
+        if (!name) throw new Error('--name is required');
+        const row = getContainerConfig(id);
+        if (!row) throw new Error(`No container config for group: ${id}`);
+        updateContainerConfigScalars(id, { assistant_name: name });
+        const updated = getContainerConfig(id)!;
+        return presentConfig(updated);
+      },
+    },
     'config update': {
       access: 'approval',
       description:

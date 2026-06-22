@@ -8,7 +8,6 @@ import http from 'http';
 import Database from 'better-sqlite3';
 
 import { getAllAgentGroups, getAgentGroup } from './db/agent-groups.js';
-import { getContainerConfig } from './db/container-configs.js';
 import { getSessionsByAgentGroup } from './db/sessions.js';
 import { getAllMessagingGroups, getMessagingGroupAgents } from './db/messaging-groups.js';
 import { getDestinations } from './modules/agent-to-agent/db/agent-destinations.js';
@@ -19,7 +18,9 @@ import { getUserDmsForUser } from './modules/permissions/db/user-dms.js';
 import { getActiveAdapters, getRegisteredChannelNames } from './channels/channel-registry.js';
 import { DATA_DIR, ASSISTANT_NAME } from './config.js';
 import { getDb } from './db/connection.js';
+import { getContainerConfig } from './db/container-configs.js';
 import { log } from './log.js';
+import { readEnvFile } from './env.js';
 
 interface PusherConfig {
   port: number;
@@ -57,6 +58,26 @@ export function stopDashboardPusher(): void {
   }
 }
 
+/**
+ * Skill entry point — the single call wired into the host boot sequence.
+ *
+ * All of the dashboard's startup logic lives here, in the skill's own file,
+ * so the integration point in src/index.ts is just `await startDashboard()`.
+ * No-ops (and says so) when DASHBOARD_SECRET is unset.
+ */
+export async function startDashboard(): Promise<void> {
+  const env = readEnvFile(['DASHBOARD_SECRET', 'DASHBOARD_PORT']);
+  const secret = process.env.DASHBOARD_SECRET || env.DASHBOARD_SECRET;
+  const port = parseInt(process.env.DASHBOARD_PORT || env.DASHBOARD_PORT || '3100', 10);
+  if (!secret) {
+    log.info('Dashboard disabled (no DASHBOARD_SECRET)');
+    return;
+  }
+  const { startDashboard: startServer } = await import('@nanoco/nanoclaw-dashboard');
+  startServer({ port, secret });
+  startDashboardPusher({ port, secret, intervalMs: 60000 });
+}
+
 /** Fire-and-forget POST to the dashboard. */
 function postJson(config: PusherConfig, urlPath: string, data: unknown): void {
   const body = JSON.stringify(data);
@@ -84,39 +105,25 @@ function startLogTail(config: PusherConfig): void {
 
   // Send last 200 lines as backfill
   try {
-    const allLines = fs
-      .readFileSync(logFile, 'utf-8')
-      .split('\n')
-      .filter((l) => l.trim());
+    const allLines = fs.readFileSync(logFile, 'utf-8').split('\n').filter((l) => l.trim());
     logOffset = fs.statSync(logFile).size;
     const tail = allLines.slice(-200).map((l) => l.replace(ANSI_RE, ''));
     if (tail.length > 0) postJson(config, '/api/logs/push', { lines: tail });
-  } catch {
-    return;
-  }
+  } catch { return; }
 
   // Poll every 2s for new lines
   logTimer = setInterval(() => {
     try {
       const stat = fs.statSync(logFile);
-      if (stat.size <= logOffset) {
-        logOffset = stat.size;
-        return;
-      }
+      if (stat.size <= logOffset) { logOffset = stat.size; return; }
       const buf = Buffer.alloc(stat.size - logOffset);
       const fd = fs.openSync(logFile, 'r');
       fs.readSync(fd, buf, 0, buf.length, logOffset);
       fs.closeSync(fd);
       logOffset = stat.size;
-      const lines = buf
-        .toString()
-        .split('\n')
-        .filter((l) => l.trim())
-        .map((l) => l.replace(ANSI_RE, ''));
+      const lines = buf.toString().split('\n').filter((l) => l.trim()).map((l) => l.replace(ANSI_RE, ''));
       if (lines.length > 0) postJson(config, '/api/logs/push', { lines });
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
   }, 2000);
 }
 
@@ -167,14 +174,12 @@ function collectAgentGroups() {
       )
       .all(g.id) as Array<Record<string, unknown>>;
 
-    const containerConfig = getContainerConfig(g.id);
-
     return {
       id: g.id,
       name: g.name,
       folder: g.folder,
-      agent_provider: containerConfig?.provider ?? null,
-      container_config: containerConfig ?? null,
+      agent_provider: g.agent_provider,
+      container_config: getContainerConfig(g.id) ?? null,
       sessionCount: sessions.length,
       runningSessions: running.length,
       wirings,
@@ -280,14 +285,7 @@ function collectUsers() {
 
 function collectTokens() {
   const sessionsDir = path.join(DATA_DIR, 'v2-sessions');
-  const allEntries: Array<{
-    model: string;
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens: number;
-    cacheCreationTokens: number;
-    agentGroupId: string;
-  }> = [];
+  const allEntries: Array<{ model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; agentGroupId: string }> = [];
   const agentGroups = getAllAgentGroups();
   const nameMap = new Map(agentGroups.map((g) => [g.id, g.name]));
 
@@ -298,47 +296,19 @@ function collectTokens() {
     }
   }
 
-  const byModel: Record<
-    string,
-    {
-      requests: number;
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadTokens: number;
-      cacheCreationTokens: number;
-    }
-  > = {};
-  const byGroup: Record<
-    string,
-    {
-      requests: number;
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadTokens: number;
-      cacheCreationTokens: number;
-      name: string;
-    }
-  > = {};
+  const byModel: Record<string, { requests: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }> = {};
+  const byGroup: Record<string, { requests: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; name: string }> = {};
   const totals = { requests: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
 
   for (const e of allEntries) {
-    if (!byModel[e.model])
-      byModel[e.model] = { requests: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    if (!byModel[e.model]) byModel[e.model] = { requests: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
     byModel[e.model].requests++;
     byModel[e.model].inputTokens += e.inputTokens;
     byModel[e.model].outputTokens += e.outputTokens;
     byModel[e.model].cacheReadTokens += e.cacheReadTokens;
     byModel[e.model].cacheCreationTokens += e.cacheCreationTokens;
 
-    if (!byGroup[e.agentGroupId])
-      byGroup[e.agentGroupId] = {
-        requests: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheCreationTokens: 0,
-        name: nameMap.get(e.agentGroupId) || e.agentGroupId,
-      };
+    if (!byGroup[e.agentGroupId]) byGroup[e.agentGroupId] = { requests: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, name: nameMap.get(e.agentGroupId) || e.agentGroupId };
     byGroup[e.agentGroupId].requests++;
     byGroup[e.agentGroupId].inputTokens += e.inputTokens;
     byGroup[e.agentGroupId].outputTokens += e.outputTokens;
@@ -359,13 +329,7 @@ function scanJsonlTokens(agentDir: string) {
   const claudeDir = path.join(agentDir, '.claude-shared', 'projects');
   if (!fs.existsSync(claudeDir)) return [];
 
-  const entries: Array<{
-    model: string;
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens: number;
-    cacheCreationTokens: number;
-  }> = [];
+  const entries: Array<{ model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }> = [];
 
   const walk = (dir: string): void => {
     try {
@@ -388,18 +352,12 @@ function scanJsonlTokens(agentDir: string) {
                     cacheCreationTokens: u.cache_creation_input_tokens || 0,
                   });
                 }
-              } catch {
-                /* skip line */
-              }
+              } catch { /* skip line */ }
             }
-          } catch {
-            /* skip file */
-          }
+          } catch { /* skip file */ }
         }
       }
-    } catch {
-      /* skip dir */
-    }
+    } catch { /* skip dir */ }
   };
   walk(claudeDir);
   return entries;
@@ -426,19 +384,13 @@ function collectContextWindows() {
           if (entry.isDirectory()) walk(full);
           else if (entry.name.endsWith('.jsonl')) jsonlFiles.push(full);
         }
-      } catch {
-        /* skip */
-      }
+      } catch { /* skip */ }
     };
     walk(claudeDir);
     if (jsonlFiles.length === 0) continue;
 
     jsonlFiles.sort((a, b) => {
-      try {
-        return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs;
-      } catch {
-        return 0;
-      }
+      try { return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs; } catch { return 0; }
     });
 
     // Read last assistant turn from newest file
@@ -468,9 +420,7 @@ function collectContextWindows() {
           });
           break;
         }
-      } catch {
-        /* skip */
-      }
+      } catch { /* skip */ }
     }
   }
 
@@ -495,32 +445,23 @@ function collectActivity() {
     for (const agDir of fs.readdirSync(sessionsDir).filter((d) => d.startsWith('ag-'))) {
       const agPath = path.join(sessionsDir, agDir);
       for (const sessDir of fs.readdirSync(agPath).filter((d) => d.startsWith('sess-'))) {
-        for (const [dbName, direction] of [
-          ['outbound.db', 'outbound'],
-          ['inbound.db', 'inbound'],
-        ] as const) {
+        for (const [dbName, direction] of [['outbound.db', 'outbound'], ['inbound.db', 'inbound']] as const) {
           const dbPath = path.join(agPath, sessDir, dbName);
           if (!fs.existsSync(dbPath)) continue;
           try {
             const db = new Database(dbPath, { readonly: true });
             const table = direction === 'outbound' ? 'messages_out' : 'messages_in';
-            const rows = db.prepare(`SELECT timestamp FROM ${table} WHERE timestamp > ?`).all(cutoff) as {
-              timestamp: string;
-            }[];
+            const rows = db.prepare(`SELECT timestamp FROM ${table} WHERE timestamp > ?`).all(cutoff) as { timestamp: string }[];
             for (const row of rows) {
               const key = row.timestamp.slice(0, 13);
               if (buckets[key]) buckets[key][direction]++;
             }
             db.close();
-          } catch {
-            /* skip */
-          }
+          } catch { /* skip */ }
         }
       }
     }
-  } catch {
-    /* skip */
-  }
+  } catch { /* skip */ }
 
   return toBucketArray(buckets);
 }
@@ -552,9 +493,7 @@ function collectMessages() {
             const rows = db.prepare('SELECT * FROM messages_in ORDER BY seq DESC LIMIT ?').all(limit);
             inbound.push(...(rows as unknown[]).reverse());
             db.close();
-          } catch {
-            /* skip */
-          }
+          } catch { /* skip */ }
         }
 
         const outDbPath = path.join(agPath, sessDir, 'outbound.db');
@@ -564,9 +503,7 @@ function collectMessages() {
             const rows = db.prepare('SELECT * FROM messages_out ORDER BY seq DESC LIMIT ?').all(limit);
             outbound.push(...(rows as unknown[]).reverse());
             db.close();
-          } catch {
-            /* skip */
-          }
+          } catch { /* skip */ }
         }
 
         if (inbound.length > 0 || outbound.length > 0) {
@@ -574,9 +511,7 @@ function collectMessages() {
         }
       }
     }
-  } catch {
-    /* skip */
-  }
+  } catch { /* skip */ }
 
   return results;
 }

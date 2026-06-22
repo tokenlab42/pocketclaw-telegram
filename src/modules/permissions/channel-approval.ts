@@ -115,35 +115,40 @@ function buildApprovalOptions(
   if (!ctx?.isGroup) {
     const who = ctx?.senderName ?? 'this user';
     options.push({
-      label: `🚀 Set up personal agent for ${who}`,
-      selectedLabel: `✅ Provisioning personal agent…`,
+      label: `✅ Approve (${who})`,
+      selectedLabel: `✅ Approved`,
       value: PROVISION_PERSONAL_VALUE,
     });
-  }
-
-  if (visibleAgentGroups.length === 1) {
     options.push({
-      label: `Connect to ${visibleAgentGroups[0].name}`,
-      selectedLabel: `✅ Connected to ${visibleAgentGroups[0].name}`,
-      value: `${CONNECT_PREFIX}${visibleAgentGroups[0].id}`,
+      label: '❌ Reject',
+      selectedLabel: '❌ Rejected',
+      value: REJECT_VALUE,
     });
-  } else if (visibleAgentGroups.length > 1) {
+  } else {
+    if (visibleAgentGroups.length === 1) {
+      options.push({
+        label: `Connect to ${visibleAgentGroups[0].name}`,
+        selectedLabel: `✅ Connected to ${visibleAgentGroups[0].name}`,
+        value: `${CONNECT_PREFIX}${visibleAgentGroups[0].id}`,
+      });
+    } else if (visibleAgentGroups.length > 1) {
+      options.push({
+        label: 'Choose existing agent',
+        selectedLabel: '📋 Choosing…',
+        value: CHOOSE_EXISTING_VALUE,
+      });
+    }
     options.push({
-      label: 'Choose existing agent',
-      selectedLabel: '📋 Choosing…',
-      value: CHOOSE_EXISTING_VALUE,
+      label: 'Connect new agent',
+      selectedLabel: '🆕 Connecting new agent…',
+      value: NEW_AGENT_VALUE,
+    });
+    options.push({
+      label: 'Reject',
+      selectedLabel: '🙅 Rejected',
+      value: REJECT_VALUE,
     });
   }
-  options.push({
-    label: 'Connect new agent',
-    selectedLabel: '🆕 Connecting new agent…',
-    value: NEW_AGENT_VALUE,
-  });
-  options.push({
-    label: 'Reject',
-    selectedLabel: '🙅 Rejected',
-    value: REJECT_VALUE,
-  });
   return options;
 }
 
@@ -339,28 +344,81 @@ export function createNewAgentGroup(name: string): AgentGroup {
 
 /**
  * Onboarding directive seeded into a freshly-provisioned personal agent's
- * CLAUDE.local.md. On the agent's first wake it runs a short self-onboarding
- * conversation and persists the result via the `self-customize` skill.
+ * CLAUDE.local.md. On the agent's first wake it runs a structured 3-step
+ * onboarding, one question at a time, then persists all results.
  */
 export function buildOnboardingInstructions(): string {
   return [
     '# Personal agent — onboarding pending',
     '',
-    'You are a brand-new personal NanoClaw assistant that was just provisioned for a',
-    'new user. You have not been configured yet — this is your very first interaction.',
+    'You are a brand-new assistant just provisioned for a new user.',
+    'You have not been configured yet — this is your very first interaction.',
     '',
-    'On your FIRST reply, run a short, friendly onboarding conversation. Collect, over',
-    'a couple of messages (do not interrogate):',
-    "  1. The user's name — how they'd like to be addressed.",
-    "  2. What they'd like to name you (your assistant name).",
-    '  3. The personality / tone they want, and what they mainly want help with.',
+    '## STRICT RULES during onboarding',
     '',
-    'Once you have their answers, use the `/self-customize` skill to permanently set',
-    "your assistant name, personality, and the user's name/preferences in your own",
-    'configuration. Confirm back briefly once done, then start helping them.',
+    '- Ask ONE question, wait for the reply, then proceed. Never bundle questions.',
+    '- Do NOT ask the user for permission before saving anything. Just do it silently.',
+    '- Do NOT run any commands other than the ones listed below.',
+    '- Do NOT browse files, install packages, or do anything else until onboarding is complete.',
+    "- If the user asks you to do something else mid-onboarding, say you'll get to it right after setup, then continue.",
     '',
-    'Remove this onboarding block (via /self-customize) once onboarding is complete so',
-    'it does not run again.',
+    '## Step 1 — Your name',
+    '',
+    'Send ONLY this (word for word):',
+    '  "Hi! Before we get started — what would you like to name me?"',
+    '',
+    'When they reply, immediately and silently:',
+    '  1. Run: `ncl groups config set-name --name "<their answer>"`',
+    '  2. Write to CLAUDE.local.md under `## Identity`:',
+    '     `assistant_name: <their answer>`',
+    '',
+    '## Step 2 — Their name',
+    '',
+    'Send ONLY:',
+    '  "Got it! And how should I refer to you?"',
+    '',
+    'When they reply, immediately and silently write to CLAUDE.local.md under `## Identity`:',
+    '  `user_name: <their answer>`',
+    '',
+    '## Step 3 — Personality',
+    '',
+    'Call `ask_user_question` with EXACTLY this:',
+    '  title: "Your style"',
+    '  question: "Last one — how would you like me to communicate?\\n\\n1. Casual & Conversational — relaxed, friendly, natural language and light humour\\n2. Conversational but Direct — warm but gets straight to the point, no filler\\n3. Executive & Concise — minimal words, maximum clarity, no small talk"',
+    '  options: ["1", "2", "3"]',
+    '',
+    'The question text lists all three options with descriptions; the buttons are just 1, 2, 3.',
+    '',
+    'When they pick, immediately and silently:',
+    '  - Write `personality: <option number>` to CLAUDE.local.md under `## Identity`.',
+    '  - Add a `## Personality directive` section with the matching rule:',
+    '    - 1 → "Be conversational and warm. Use natural language and occasional light humour. Keep things accessible and friendly."',
+    '    - 2 → "Be friendly but direct. Skip filler phrases. Lead with the answer, keep follow-up brief."',
+    '    - 3 → "No pleasantries. Lead with the answer. Prefer bullet points over prose. Maximum one follow-up sentence."',
+    '',
+    '## Step 4 — Welcome message',
+    '',
+    'Send this message WORD FOR WORD. Do NOT rephrase, shorten, or adapt it to personality.',
+    'Replace [user_name] and [assistant_name] with the actual values. Nothing else changes.',
+    '',
+    '---',
+    "Hey [user_name]! I'm [assistant_name]. Here's what I can do for you:",
+    '',
+    '• Remember our conversations — no need to repeat yourself',
+    '• Answer questions on any topic',
+    '• Research topics and browse the web for live info',
+    '• Build PowerPoint presentations',
+    '• Run tasks on a schedule or in the background',
+    '',
+    'No commands needed — just chat. What would you like to work on?',
+    '---',
+    '',
+    '## After the welcome',
+    '',
+    '- Remove this entire `# Personal agent — onboarding pending` block from CLAUDE.local.md.',
+    '- Do NOT mention sub-agents or the ability to create new agents at any point.',
+    '  You have two specialist helpers (Slides and Researcher) wired silently in the',
+    '  background — delegate to them automatically; the user never needs to know.',
   ].join('\n');
 }
 
