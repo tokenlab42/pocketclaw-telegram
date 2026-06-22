@@ -14,7 +14,6 @@
  *  - No agent groups configured: no card, no row
  */
 import fs from 'fs';
-import path from 'path';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { initTestDb, closeDb, runMigrations } from '../../db/index.js';
@@ -55,11 +54,7 @@ vi.mock('./user-dm.js', () => ({
 
 vi.mock('../../config.js', async () => {
   const actual = await vi.importActual('../../config.js');
-  return {
-    ...actual,
-    DATA_DIR: '/tmp/nanoclaw-test-channel-approval',
-    GROUPS_DIR: '/tmp/nanoclaw-test-channel-approval/groups',
-  };
+  return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-channel-approval' };
 });
 
 const TEST_DIR = '/tmp/nanoclaw-test-channel-approval';
@@ -284,100 +279,6 @@ describe('unknown-channel registration flow', () => {
     expect(mga.engage_pattern).toBe('.');
   });
 
-  it('DM card offers a "provision personal agent" option (not on group cards)', async () => {
-    const { routeInbound } = await import('../../router.js');
-    const { PROVISION_PERSONAL_VALUE } = await import('./channel-approval.js');
-
-    // DM → should include the provision option.
-    await routeInbound(dmEvent('dm-provision-offer'));
-    await new Promise((r) => setTimeout(r, 10));
-    const dmPayload = JSON.parse(deliverMock.mock.calls[0][4] as string) as {
-      options: Array<{ value: string }>;
-    };
-    expect(dmPayload.options.map((o) => o.value)).toContain(PROVISION_PERSONAL_VALUE);
-
-    // Group mention → should NOT include it.
-    deliverMock.mockClear();
-    await routeInbound(groupMention('chat-provision-offer'));
-    await new Promise((r) => setTimeout(r, 10));
-    const groupPayload = JSON.parse(deliverMock.mock.calls[0][4] as string) as {
-      options: Array<{ value: string }>;
-    };
-    expect(groupPayload.options.map((o) => o.value)).not.toContain(PROVISION_PERSONAL_VALUE);
-  });
-
-  it('provision personal agent → new agent owned by sender (scoped admin), DM wired, replay wakes container', async () => {
-    const { routeInbound } = await import('../../router.js');
-    const { getResponseHandlers } = await import('../../response-registry.js');
-    const { PROVISION_PERSONAL_VALUE } = await import('./channel-approval.js');
-    const { wakeContainer } = await import('../../container-runner.js');
-    (wakeContainer as unknown as ReturnType<typeof vi.fn>).mockClear();
-
-    await routeInbound(dmEvent('dm-provision-user'));
-    await new Promise((r) => setTimeout(r, 10));
-
-    const { getDb } = await import('../../db/connection.js');
-    const pending = getDb().prepare('SELECT messaging_group_id FROM pending_channel_approvals').get() as {
-      messaging_group_id: string;
-    };
-    expect(pending).toBeDefined();
-
-    // Owner approves the personal-agent provisioning.
-    for (const handler of getResponseHandlers()) {
-      const claimed = await handler({
-        questionId: pending.messaging_group_id,
-        value: PROVISION_PERSONAL_VALUE,
-        userId: 'owner',
-        channelType: 'telegram',
-        platformId: 'dm-owner',
-        threadId: null,
-      });
-      if (claimed) break;
-    }
-
-    // A NEW agent group was created (distinct from the seed ag-1).
-    const newGroup = getDb().prepare("SELECT id, name FROM agent_groups WHERE id != 'ag-1'").get() as
-      | { id: string; name: string }
-      | undefined;
-    expect(newGroup).toBeDefined();
-    expect(newGroup!.name).toBe("Stranger's Assistant");
-
-    // Sender is scoped admin (NOT owner) of their own group.
-    const role = getDb()
-      .prepare('SELECT role, agent_group_id FROM user_roles WHERE user_id = ? AND agent_group_id = ?')
-      .get('telegram:stranger', newGroup!.id) as { role: string; agent_group_id: string } | undefined;
-    expect(role).toBeDefined();
-    expect(role!.role).toBe('admin');
-
-    // Membership row present so the access gate passes on replay.
-    const member = getDb()
-      .prepare('SELECT 1 AS x FROM agent_group_members WHERE user_id = ? AND agent_group_id = ?')
-      .get('telegram:stranger', newGroup!.id);
-    expect(member).toBeDefined();
-
-    // DM wired to the new agent with DM defaults.
-    const mga = getDb()
-      .prepare(
-        'SELECT agent_group_id, engage_mode, engage_pattern, sender_scope FROM messaging_group_agents WHERE messaging_group_id = ?',
-      )
-      .get(pending.messaging_group_id) as {
-      agent_group_id: string;
-      engage_mode: string;
-      engage_pattern: string;
-      sender_scope: string;
-    };
-    expect(mga.agent_group_id).toBe(newGroup!.id);
-    expect(mga.engage_mode).toBe('pattern');
-    expect(mga.engage_pattern).toBe('.');
-    expect(mga.sender_scope).toBe('known');
-
-    // Pending row cleared, container woken via replay.
-    const stillPending = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number })
-      .c;
-    expect(stillPending).toBe(0);
-    expect(wakeContainer).toHaveBeenCalled();
-  });
-
   it('deny → sets denied_at; future mentions drop silently without a second card', async () => {
     const { routeInbound } = await import('../../router.js');
     const { getResponseHandlers } = await import('../../response-registry.js');
@@ -567,28 +468,5 @@ describe('no-owner / no-agent failure modes', () => {
     expect(deliverMock).not.toHaveBeenCalled();
     const count = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number }).c;
     expect(count).toBe(0);
-  });
-});
-
-describe('createNewAgentGroup', () => {
-  it('wires a personal Chroma collection on the new group', async () => {
-    const { createNewAgentGroup } = await import('./channel-approval.js');
-    const { getAgentGroup } = await import('../../db/agent-groups.js');
-    const { getContainerConfig } = await import('../../db/container-configs.js');
-    const { CHROMA_MCP_SERVER } = await import('../../chroma-onboarding.js');
-
-    const ag = createNewAgentGroup('Nova');
-
-    const stored = getAgentGroup(ag.id)!;
-    expect(typeof stored.chroma_collection_id).toBe('string');
-    expect(stored.chroma_collection_id).toBeTruthy();
-
-    const config = getContainerConfig(ag.id)!;
-    const servers = JSON.parse(config.mcp_servers) as Record<string, unknown>;
-    expect(servers.chroma).toEqual(CHROMA_MCP_SERVER);
-
-    const claudeLocal = fs.readFileSync(`${TEST_DIR}/groups/${ag.folder}/CLAUDE.local.md`, 'utf-8');
-    expect(claudeLocal).toContain(stored.chroma_collection_id as string);
-    expect(claudeLocal).toContain('`news`');
   });
 });

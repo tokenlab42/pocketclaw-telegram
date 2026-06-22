@@ -5,7 +5,6 @@
 # Runtime split:
 #   - agent-runner (our TypeScript code): Bun, mounted RO at /app/src by host
 #   - globally-installed Node CLIs (claude-code, agent-browser, vercel): pnpm + Node
-#   - uv/uvx: runs Python-based MCP servers without a separate pip install step
 #
 # Source is never baked in — /app/src is provided by a shared read-only
 # bind mount at runtime (see src/container-runner.ts). Source-only changes
@@ -23,7 +22,6 @@ ARG INSTALL_CJK_FONTS=false
 # pinned in cli-tools.json so a skill can add one with a json-merge; Bun (the
 # runtime) is pinned here because it installs from a different source.
 ARG BUN_VERSION=1.3.12
-ARG UV_VERSION=0.11.21
 
 # ---- System dependencies -----------------------------------------------------
 # tini: correct PID 1 / signal forwarding so outbound.db writes finalize on
@@ -71,13 +69,6 @@ RUN curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" && \
     install -m 0755 /root/.bun/bin/bun /usr/local/bin/bun && \
     rm -rf /root/.bun
 
-# ---- uv / uvx ------------------------------------------------------------
-# uvx runs Python-packaged MCP servers (e.g. `uvx mcp-server-foo`) without a
-# project-wide pip install. UV_UNMANAGED_INSTALL drops the binaries straight
-# into /usr/local/bin and skips shell-profile mutation (irrelevant in a
-# build step, and /usr/local/bin is already on PATH for the non-root user).
-RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_UNMANAGED_INSTALL="/usr/local/bin" sh
-
 # ---- agent-runner deps -------------------------------------------------------
 # Deps are cached independently of CLI versions. Source is NOT baked in —
 # it's provided by the shared RO mount at runtime.
@@ -115,9 +106,6 @@ COPY cli-tools.json install-cli-tools.sh /tmp/
 RUN --mount=type=cache,target=/root/.cache/pnpm \
     sh /tmp/install-cli-tools.sh /tmp/cli-tools.json
 
-RUN --mount=type=cache,target=/root/.cache/pnpm \
-    pnpm install -g "@cocal/google-calendar-mcp@${CALENDAR_MCP_VERSION}"
-
 # ---- ncl CLI wrapper ----------------------------------------------------------
 # Actual script lives in the mounted source at /app/src/cli/ncl.ts.
 RUN printf '#!/bin/sh\nexec bun /app/src/cli/ncl.ts "$@"\n' > /usr/local/bin/ncl && \
@@ -133,19 +121,6 @@ RUN mkdir -p /workspace/group /workspace/extra && \
     chmod 777 /home/node
 
 USER node
-
-# Pre-install chroma-mcp as a uv tool at build time — the Chroma MCP server
-# wired into every onboarded agent (see src/chroma-onboarding.ts) — so the
-# binary and its full dependency tree are baked into the image instead of
-# resolved/downloaded on every fresh container. Runs as `node` (the user
-# that invokes it at runtime) and deliberately without --mount=type=cache:
-# that cache lives outside the final image and wouldn't ship with it,
-# defeating the point. `uv tool install` puts the executable in
-# ~/.local/bin, so put that on PATH for the direct `chroma-mcp` invocation
-# (no uvx wrapper needed, since it's already installed).
-RUN uv tool install chroma-mcp
-ENV PATH="/home/node/.local/bin:$PATH"
-
 WORKDIR /workspace/group
 
 # tini is PID 1, reaps zombies, forwards signals cleanly. entrypoint.sh does

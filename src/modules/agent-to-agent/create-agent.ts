@@ -65,16 +65,6 @@ export async function handleCreateAgent(content: Record<string, unknown>, sessio
     return;
   }
 
-  // Only global-scoped agents (owner) may create new agents. Personal user
-  // agents (cli_scope: 'group') have the researcher and slides sub-agents
-  // pre-provisioned — no further agent creation is permitted.
-  const config = getContainerConfig(session.agent_group_id);
-  if (!config || config.cli_scope !== 'global') {
-    notifyAgent(session, 'create_agent is not available for this agent.');
-    log.warn('create_agent blocked: agent does not have global cli_scope', { agentGroupId: session.agent_group_id });
-    return;
-  }
-
   const sourceGroup = getAgentGroup(session.agent_group_id);
   if (!sourceGroup) {
     notifyAgent(session, 'create_agent failed: source agent group not found.');

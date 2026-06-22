@@ -191,10 +191,8 @@ async function main(): Promise<void> {
   const folder = `dm-with-${normalizeName(args.displayName)}`;
   const pickedProvider = process.env.NANOCLAW_PICKED_PROVIDER?.trim().toLowerCase();
   let ag: AgentGroup | undefined = getAgentGroupByFolder(folder);
-  let chromaCollectionId: string | undefined;
   if (!ag) {
     const agId = generateId('ag');
-    chromaCollectionId = randomUUID();
     createAgentGroup({
       id: agId,
       name: args.agentName,
@@ -202,7 +200,6 @@ async function main(): Promise<void> {
       agent_provider: null,
       created_at: now,
     });
-    updateAgentGroup(agId, { chroma_collection_id: chromaCollectionId });
     ag = getAgentGroupByFolder(folder)!;
     console.log(`Created agent group: ${ag.id} (${folder})`);
   } else {
