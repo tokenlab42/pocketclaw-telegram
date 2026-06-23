@@ -15,8 +15,9 @@
 import fs from 'fs';
 import path from 'path';
 
-import { createAgentGroup, getAgentGroupByFolder } from '../../db/agent-groups.js';
-import { createContainerConfig } from '../../db/container-configs.js';
+import { createAgentGroup, getAgentGroupByFolder, getAgentGroup, updateAgentGroup } from '../../db/agent-groups.js';
+import { createContainerConfig, addMcpServer } from '../../db/container-configs.js';
+import { CHROMA_MCP_SERVER } from '../../chroma-onboarding.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { GROUPS_DIR } from '../../config.js';
 import { createDestination } from '../agent-to-agent/db/agent-destinations.js';
@@ -187,6 +188,9 @@ export function provisionSubAgents(parentAgentGroupId: string, parentFolder: str
   const SLIDES_LOCAL = 'slides-agent';
   const RESEARCHER_LOCAL = 'researcher';
 
+  const parentGroup = getAgentGroup(parentAgentGroupId);
+  const parentCollectionId = parentGroup?.chroma_collection_id;
+
   // ── Slides sub-agent ────────────────────────────────────────────────────
   const slidesId = makeId();
   const slidesFolder = uniqueFolder(`${parentFolder}-slides`);
@@ -199,6 +203,10 @@ export function provisionSubAgents(parentAgentGroupId: string, parentFolder: str
     agent_provider: null,
     created_at: now,
   });
+
+  if (parentCollectionId) {
+    updateAgentGroup(slidesId, { chroma_collection_id: parentCollectionId });
+  }
 
   createContainerConfig({
     agent_group_id: slidesId,
@@ -219,6 +227,9 @@ export function provisionSubAgents(parentAgentGroupId: string, parentFolder: str
 
   const slidesGroup = { id: slidesId, name: slidesName, folder: slidesFolder, agent_provider: null, created_at: now };
   initGroupFilesystem(slidesGroup, { instructions: slidesAgentInstructions(parentName) });
+  if (parentCollectionId) {
+    addMcpServer(slidesId, 'chroma', CHROMA_MCP_SERVER);
+  }
 
   // ── Researcher sub-agent ─────────────────────────────────────────────────
   const researcherId = makeId();
@@ -232,6 +243,10 @@ export function provisionSubAgents(parentAgentGroupId: string, parentFolder: str
     agent_provider: null,
     created_at: now,
   });
+
+  if (parentCollectionId) {
+    updateAgentGroup(researcherId, { chroma_collection_id: parentCollectionId });
+  }
 
   createContainerConfig({
     agent_group_id: researcherId,
@@ -258,6 +273,9 @@ export function provisionSubAgents(parentAgentGroupId: string, parentFolder: str
     created_at: now,
   };
   initGroupFilesystem(researcherGroup, { instructions: researcherInstructions(parentName) });
+  if (parentCollectionId) {
+    addMcpServer(researcherId, 'chroma', CHROMA_MCP_SERVER);
+  }
 
   // ── Bidirectional destinations ───────────────────────────────────────────
   // parent → slides

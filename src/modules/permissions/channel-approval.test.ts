@@ -306,7 +306,7 @@ describe('unknown-channel registration flow', () => {
     expect(groupPayload.options.map((o) => o.value)).not.toContain(PROVISION_PERSONAL_VALUE);
   });
 
-  it('provision personal agent → new agent owned by sender (scoped admin), DM wired, replay wakes container', async () => {
+  it('provision personal agent → new agent, sender added as member, DM wired, replay wakes container', async () => {
     const { routeInbound } = await import('../../router.js');
     const { getResponseHandlers } = await import('../../response-registry.js');
     const { PROVISION_PERSONAL_VALUE } = await import('./channel-approval.js');
@@ -342,12 +342,24 @@ describe('unknown-channel registration flow', () => {
     expect(newGroup).toBeDefined();
     expect(newGroup!.name).toBe("Stranger's Assistant");
 
-    // Sender is scoped admin (NOT owner) of their own group.
+    const storedGroup = getDb()
+      .prepare('SELECT chroma_collection_id FROM agent_groups WHERE id = ?')
+      .get(newGroup!.id) as { chroma_collection_id: string | null };
+    expect(typeof storedGroup.chroma_collection_id).toBe('string');
+    expect(storedGroup.chroma_collection_id).toBeTruthy();
+
+    const containerConfig = getDb()
+      .prepare('SELECT mcp_servers FROM container_configs WHERE agent_group_id = ?')
+      .get(newGroup!.id) as { mcp_servers: string };
+    const servers = JSON.parse(containerConfig.mcp_servers);
+    expect(servers.chroma).toBeDefined();
+    expect(servers.chroma.command).toBe('chroma-mcp');
+
+    // Sender has NO scoped role for their own group (since owner is the sole admin/owner).
     const role = getDb()
       .prepare('SELECT role, agent_group_id FROM user_roles WHERE user_id = ? AND agent_group_id = ?')
-      .get('telegram:stranger', newGroup!.id) as { role: string; agent_group_id: string } | undefined;
-    expect(role).toBeDefined();
-    expect(role!.role).toBe('admin');
+      .get('telegram:stranger', newGroup!.id);
+    expect(role).toBeUndefined();
 
     // Membership row present so the access gate passes on replay.
     const member = getDb()

@@ -389,15 +389,7 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
 
     const ag = provisionPersonalAgent(agentName);
 
-    // The sender owns their own agent: scoped admin (full self-customize +
-    // sub-agents over THIS group only) + membership so the access gate passes.
-    grantRole({
-      user_id: senderUserId,
-      role: 'admin',
-      agent_group_id: ag.id,
-      granted_by: approverId,
-      granted_at: now,
-    });
+    // The sender gets membership so the access gate passes.
     addMember({
       user_id: senderUserId,
       agent_group_id: ag.id,

@@ -6,7 +6,7 @@
  */
 import path from 'path';
 
-import { backfillContainerConfigs } from './backfill-container-configs.js';
+import { backfillContainerConfigs, backfillChromaSubAgentConfigs } from './backfill-container-configs.js';
 import { readEnvFile } from './env.js';
 import { DATA_DIR } from './config.js';
 import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js';
@@ -84,6 +84,7 @@ async function main(): Promise<void> {
   // 1b. Backfill container_configs from legacy container.json files.
   // Idempotent — skips groups that already have a config row.
   backfillContainerConfigs();
+  backfillChromaSubAgentConfigs();
 
   // 1c. One-time filesystem cutover — idempotent, no-op after first run.
   migrateGroupsToClaudeLocal();
