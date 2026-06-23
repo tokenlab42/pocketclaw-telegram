@@ -100,15 +100,47 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     log(`Resuming agent session ${continuation}`);
   }
 
-  // Clear leftover 'processing' acks from a previous crashed container.
-  // This lets the new container re-process those messages.
   clearStaleProcessingAcks();
 
   let pollCount = 0;
   let isFirstPoll = true;
   while (true) {
-    // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
-    const messages = getPendingMessages(isFirstPoll).filter((m) => m.kind !== 'system');
+    const allPending = getPendingMessages(isFirstPoll);
+
+    // Check if there is an embed_file system action
+    const embedFileMsg = allPending.find((m) => {
+      if (m.kind === 'system') {
+        try {
+          const parsed = JSON.parse(m.content);
+          return parsed.action === 'embed_file';
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    });
+
+    if (embedFileMsg) {
+      log('Intercepted embed_file system action');
+      markProcessing([embedFileMsg.id]);
+      try {
+        const parsed = JSON.parse(embedFileMsg.content);
+        const { embedFile } = await import('./embedder.js');
+        await embedFile({
+          attachments: parsed.attachments,
+          collectionId: parsed.collectionId,
+          originalEvent: parsed.originalEvent,
+        });
+      } catch (err) {
+        log(`embed_file failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        markCompleted([embedFileMsg.id]);
+      }
+      isFirstPoll = false;
+      continue;
+    }
+
+    const messages = allPending.filter((m) => m.kind !== 'system');
     isFirstPoll = false;
     pollCount++;
 
@@ -347,6 +379,25 @@ async function processQuery(
         // canonical command path + formatMessagesWithCommands.
         if (pending.some((m) => isRunnerCommand(m))) {
           log('Pending slash command — ending stream so outer loop can process');
+          endedForCommand = true;
+          query.end();
+          return;
+        }
+
+        const hasEmbedFile = pending.some((m) => {
+          if (m.kind === 'system') {
+            try {
+              const parsed = JSON.parse(m.content);
+              return parsed.action === 'embed_file';
+            } catch {
+              return false;
+            }
+          }
+          return false;
+        });
+
+        if (hasEmbedFile) {
+          log('Pending embed_file system action — ending stream so outer loop can process');
           endedForCommand = true;
           query.end();
           return;

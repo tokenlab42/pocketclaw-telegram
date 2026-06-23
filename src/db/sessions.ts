@@ -223,5 +223,40 @@ export function getAskQuestionRender(
     if (s?.title) return { title: s.title, options: JSON.parse(s.options_json) };
   }
 
+  if (hasTable(getDb(), 'pending_file_messages')) {
+    const f = getDb().prepare('SELECT title, options_json FROM pending_file_messages WHERE question_id = ?').get(id) as
+      | { title: string; options_json: string }
+      | undefined;
+    if (f?.title) return { title: f.title, options: JSON.parse(f.options_json) };
+  }
+
   return undefined;
+}
+
+// ── Pending File Messages ──
+
+export function createPendingFileMessage(pfm: import('../types.js').PendingFileMessage): boolean {
+  const result = getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO pending_file_messages (question_id, channel_type, platform_id, thread_id, user_id, title, options_json, original_message, created_at)
+       VALUES (@question_id, @channel_type, @platform_id, @thread_id, @user_id, @title, @options_json, @original_message, @created_at)`,
+    )
+    .run({
+      ...pfm,
+      options_json: JSON.stringify(pfm.options),
+    });
+  return result.changes > 0;
+}
+
+export function getPendingFileMessage(questionId: string): import('../types.js').PendingFileMessage | undefined {
+  const row = getDb().prepare('SELECT * FROM pending_file_messages WHERE question_id = ?').get(questionId) as
+    | (Omit<import('../types.js').PendingFileMessage, 'options'> & { options_json: string })
+    | undefined;
+  if (!row) return undefined;
+  const { options_json, ...rest } = row;
+  return { ...rest, options: JSON.parse(options_json) };
+}
+
+export function deletePendingFileMessage(questionId: string): void {
+  getDb().prepare('DELETE FROM pending_file_messages WHERE question_id = ?').run(questionId);
 }

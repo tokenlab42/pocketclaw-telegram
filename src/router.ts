@@ -34,6 +34,8 @@ import { wakeContainer } from './container-runner.js';
 import { getSession } from './db/sessions.js';
 import type { AgentGroup, MessagingGroup, MessagingGroupAgent } from './types.js';
 import type { InboundEvent } from './channels/adapter.js';
+import { getDeliveryAdapter } from './delivery.js';
+import { normalizeOptions } from './channels/ask-question.js';
 
 function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -159,6 +161,57 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
   // Pre-route interceptor — lets modules consume messages before any routing
   // (e.g. free-text replies during multi-step approval flows).
   if (messageInterceptor && (await messageInterceptor(event))) return;
+
+  // Intercept file uploads if not bypassed
+  if (!event.bypassFileMemoryInterceptor) {
+    const parsed = safeParseContent(event.message.content) as any;
+    if (Array.isArray(parsed.attachments) && parsed.attachments.length > 0) {
+      const deliveryAdapter = getDeliveryAdapter();
+      if (deliveryAdapter) {
+        const questionId = `file-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const options = [
+          { label: '🧠 Long-Term Memory (Chroma)', value: 'long-term' },
+          { label: '💬 Short-Term Context', value: 'short-term' },
+        ];
+        const title = 'File Upload Memory Strategy';
+        const question = 'You uploaded some file(s). How would you like to handle them?';
+
+        await deliveryAdapter.deliver(
+          event.channelType,
+          event.platformId,
+          event.threadId,
+          'chat-sdk',
+          JSON.stringify({
+            type: 'ask_question',
+            questionId,
+            title,
+            question,
+            options,
+          })
+        );
+
+        // Resolve user ID
+        const userId: string | null = senderResolver ? senderResolver(event) : null;
+
+        // Persist to pending_file_messages table
+        const { createPendingFileMessage } = await import('./db/sessions.js');
+        createPendingFileMessage({
+          question_id: questionId,
+          channel_type: event.channelType,
+          platform_id: event.platformId,
+          thread_id: event.threadId,
+          user_id: userId,
+          title,
+          options: normalizeOptions(options),
+          original_message: JSON.stringify(event),
+          created_at: new Date().toISOString(),
+        });
+
+        log.info('File upload intercepted, choice card sent', { questionId, platformId: event.platformId });
+        return; // Halt routing
+      }
+    }
+  }
 
   // 0. Apply the adapter's thread policy. Non-threaded adapters (Telegram,
   //    WhatsApp, iMessage, email) collapse threads to the channel.

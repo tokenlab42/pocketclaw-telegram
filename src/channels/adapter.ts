@@ -60,6 +60,7 @@ export interface InboundEvent {
     isGroup?: boolean;
   };
   replyTo?: DeliveryAddress;
+  bypassFileMemoryInterceptor?: boolean;
 }
 
 /** Inbound message from adapter to host. */
