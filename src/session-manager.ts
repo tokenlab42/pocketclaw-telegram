@@ -233,14 +233,18 @@ export function writeSessionMessage(
     const rawHandle = contentObj.senderId || contentObj.author?.userId || contentObj.sender || null;
     if (rawHandle) {
       const channelType = message.channelType || null;
-      const userId = rawHandle.includes(':') ? rawHandle : (channelType ? `${channelType}:${rawHandle}` : rawHandle);
+      const userId = rawHandle.includes(':') ? rawHandle : channelType ? `${channelType}:${rawHandle}` : rawHandle;
 
       let senderRole = 'member';
       try {
         const centralDb = getDb();
         if (hasTable(centralDb, 'user_roles')) {
-          const isOwner = !!centralDb.prepare("SELECT 1 FROM user_roles WHERE user_id = ? AND role = 'owner' AND agent_group_id IS NULL LIMIT 1").get(userId);
-          const isAdmin = !!centralDb.prepare("SELECT 1 FROM user_roles WHERE user_id = ? AND role = 'admin' AND agent_group_id = ? LIMIT 1").get(userId, agentGroupId);
+          const isOwner = !!centralDb
+            .prepare("SELECT 1 FROM user_roles WHERE user_id = ? AND role = 'owner' AND agent_group_id IS NULL LIMIT 1")
+            .get(userId);
+          const isAdmin = !!centralDb
+            .prepare("SELECT 1 FROM user_roles WHERE user_id = ? AND role = 'admin' AND agent_group_id = ? LIMIT 1")
+            .get(userId, agentGroupId);
           if (isOwner) {
             senderRole = 'owner';
           } else if (isAdmin) {

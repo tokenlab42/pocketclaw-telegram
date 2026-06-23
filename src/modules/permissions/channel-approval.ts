@@ -430,6 +430,9 @@ export function provisionPersonalAgent(name: string): AgentGroup {
     created_at: new Date().toISOString(),
   });
 
+  const collectionId = randomUUID();
+  updateAgentGroup(agId, { chroma_collection_id: collectionId });
+
   createContainerConfig({
     agent_group_id: agId,
     provider: null,
@@ -449,6 +452,7 @@ export function provisionPersonalAgent(name: string): AgentGroup {
 
   const ag = getAgentGroup(agId)!;
   initGroupFilesystem(ag, { instructions: buildOnboardingInstructions() });
+  addMcpServer(ag.id, 'chroma', CHROMA_MCP_SERVER);
   provisionSubAgents(agId, folder, name);
   return ag;
 }
