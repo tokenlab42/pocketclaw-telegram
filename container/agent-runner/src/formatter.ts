@@ -169,6 +169,7 @@ function formatChatMessages(messages: MessageInRow[]): string {
 function formatSingleChat(msg: MessageInRow): string {
   const content = parseContent(msg.content);
   const sender = content.sender || content.author?.fullName || content.author?.userName || 'Unknown';
+  const role = content.senderRole || 'member';
   const time = formatLocalTime(msg.timestamp, TIMEZONE);
   const text = content.text || '';
   const idAttr = msg.seq != null ? ` id="${msg.seq}"` : '';
@@ -178,7 +179,7 @@ function formatSingleChat(msg: MessageInRow): string {
 
   const fromAttr = originAttr(msg);
 
-  return `<message${idAttr}${fromAttr} sender="${escapeXml(sender)}" time="${escapeXml(time)}"${replyAttr}>${replyPrefix}${escapeXml(text)}${attachmentsSuffix}</message>`;
+  return `<message${idAttr}${fromAttr} sender="${escapeXml(sender)}" role="${escapeXml(role)}" time="${escapeXml(time)}"${replyAttr}>${replyPrefix}${escapeXml(text)}${attachmentsSuffix}</message>`;
 }
 
 /**
