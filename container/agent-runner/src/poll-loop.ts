@@ -123,8 +123,9 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (embedFileMsg) {
       log('Intercepted embed_file system action');
       markProcessing([embedFileMsg.id]);
+      let parsed: any = null;
       try {
-        const parsed = JSON.parse(embedFileMsg.content);
+        parsed = JSON.parse(embedFileMsg.content);
         const { embedFile } = await import('./embedder.js');
         await embedFile({
           attachments: parsed.attachments,
@@ -132,7 +133,25 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
           originalEvent: parsed.originalEvent,
         });
       } catch (err) {
-        log(`embed_file failed: ${err instanceof Error ? err.message : String(err)}`);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        log(`embed_file failed: ${errMsg}`);
+        if (parsed && parsed.originalEvent) {
+          try {
+            const { writeMessageOut } = await import('./db/messages-out.js');
+            const outMsgId = `sys-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            writeMessageOut({
+              id: outMsgId,
+              kind: 'system',
+              content: JSON.stringify({
+                action: 'file_embedded_failure',
+                originalEvent: parsed.originalEvent,
+                error: errMsg,
+              }),
+            });
+          } catch (dbErr) {
+            log(`Failed to write file_embedded_failure: ${dbErr}`);
+          }
+        }
       } finally {
         markCompleted([embedFileMsg.id]);
       }

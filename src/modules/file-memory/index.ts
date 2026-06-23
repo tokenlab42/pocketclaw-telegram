@@ -9,7 +9,7 @@ import { getAgentGroup } from '../../db/agent-groups.js';
 import { resolveSession, writeSessionMessage } from '../../session-manager.js';
 import type { InboundEvent } from '../../channels/adapter.js';
 import type { Session } from '../../types.js';
-import { registerDeliveryAction } from '../../delivery.js';
+import { registerDeliveryAction, getDeliveryAdapter } from '../../delivery.js';
 
 async function handleFileMemoryChoice(payload: ResponsePayload): Promise<boolean> {
   if (!payload.questionId.startsWith('file-')) return false;
@@ -31,6 +31,38 @@ async function handleFileMemoryChoice(payload: ResponsePayload): Promise<boolean
     }).catch((err) => {
       log.error('Failed to route short-term file message', { err });
     });
+    return true;
+  }
+
+  if (payload.value === 'cancel') {
+    log.info('File memory choice: cancelled.', { questionId: payload.questionId });
+    const mg = getMessagingGroupByPlatform(pfm.channel_type, pfm.platform_id);
+    if (mg) {
+      const agents = getMessagingGroupAgents(mg.id);
+      for (const agent of agents) {
+        let effectiveSessionMode = agent.session_mode;
+        const { getChannelAdapter } = await import('../../channels/channel-registry.js');
+        const adapter = originalEvent.channelType ? getChannelAdapter(originalEvent.channelType) : null;
+        if (adapter?.supportsThreads && effectiveSessionMode !== 'agent-shared' && mg.is_group !== 0) {
+          effectiveSessionMode = 'per-thread';
+        }
+        const { session } = resolveSession(agent.agent_group_id, mg.id, originalEvent.threadId, effectiveSessionMode);
+        writeSessionMessage(session.agent_group_id, session.id, {
+          id: `sys-embed-cancel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          kind: 'chat',
+          timestamp: new Date().toISOString(),
+          platformId: originalEvent.platformId,
+          channelType: originalEvent.channelType,
+          threadId: originalEvent.threadId,
+          content: JSON.stringify({
+            text: '[Upload cancelled]',
+            sender: 'system',
+            senderId: 'system',
+          }),
+          trigger: 0,
+        });
+      }
+    }
     return true;
   }
 
@@ -136,3 +168,63 @@ async function handleFileEmbeddedSuccess(content: Record<string, unknown>, sessi
 }
 
 registerDeliveryAction('file_embedded_success', handleFileEmbeddedSuccess);
+
+async function handleFileEmbeddedFailure(content: Record<string, unknown>, session: Session): Promise<void> {
+  const errMsg = (content.error as string) || 'Unknown error';
+  log.error('Handling file_embedded_failure system action', { sessionId: session.id, error: errMsg });
+
+  const originalEvent = content.originalEvent as InboundEvent;
+  if (!originalEvent) {
+    log.error('Missing originalEvent in file_embedded_failure action');
+    return;
+  }
+
+  const deliveryAdapter = getDeliveryAdapter();
+  if (!deliveryAdapter) {
+    log.error('No delivery adapter found to send failure card');
+    return;
+  }
+
+  const questionId = `file-fail-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const options = [
+    { label: '💬 Read as Short-Term Context', value: 'short-term' },
+    { label: '❌ Cancel Upload', value: 'cancel' },
+  ];
+  const title = 'Embedding Failed';
+  const question = `Failed to store your file in long-term memory: ${errMsg}. How would you like to proceed?`;
+
+  const { sanitizeTelegramLegacyMarkdown } = await import('../../channels/telegram-markdown-sanitize.js');
+  const sanitizedQuestion = sanitizeTelegramLegacyMarkdown(question);
+
+  // 1. Deliver the options card to the user
+  await deliveryAdapter.deliver(
+    originalEvent.channelType,
+    originalEvent.platformId,
+    originalEvent.threadId,
+    'chat-sdk',
+    JSON.stringify({
+      type: 'ask_question',
+      questionId,
+      title,
+      question: sanitizedQuestion,
+      options,
+    }),
+  );
+
+  // 2. Persist to pending_file_messages table so we can retrieve originalEvent on response
+  const { createPendingFileMessage } = await import('../../db/sessions.js');
+  const { normalizeOptions } = await import('../../channels/ask-question.js');
+  createPendingFileMessage({
+    question_id: questionId,
+    channel_type: originalEvent.channelType,
+    platform_id: originalEvent.platformId,
+    thread_id: originalEvent.threadId || null,
+    user_id: null,
+    title,
+    options: normalizeOptions(options),
+    original_message: JSON.stringify(originalEvent),
+    created_at: new Date().toISOString(),
+  });
+}
+
+registerDeliveryAction('file_embedded_failure', handleFileEmbeddedFailure);

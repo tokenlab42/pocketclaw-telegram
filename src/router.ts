@@ -187,7 +187,7 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
             title,
             question,
             options,
-          })
+          }),
         );
 
         // Resolve user ID
