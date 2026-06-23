@@ -60,4 +60,19 @@ describe('buildSystemPromptAddendum — multi-destination routing guidance', () 
     expect(prompt).toContain('default to addressing the destination it came `from`');
     expect(prompt).toContain('`casa`');
   });
+
+  it('appends Chroma instructions dynamically when NANOCLAW_CHROMA_COLLECTION_ID is set', () => {
+    const backup = process.env.NANOCLAW_CHROMA_COLLECTION_ID;
+    try {
+      process.env.NANOCLAW_CHROMA_COLLECTION_ID = 'test-collection-uuid-12345';
+      const prompt = buildSystemPromptAddendum('Casa');
+      expect(prompt).toContain('## Long-term memory (Chroma)');
+      expect(prompt).toContain('test-collection-uuid-12345');
+      expect(prompt).toContain('`news`');
+      expect(prompt).toContain('role="owner"');
+      expect(prompt).toContain('role="member"');
+    } finally {
+      process.env.NANOCLAW_CHROMA_COLLECTION_ID = backup;
+    }
+  });
 });

@@ -181,6 +181,18 @@ export interface PendingQuestion {
   created_at: string;
 }
 
+export interface PendingFileMessage {
+  question_id: string;
+  channel_type: string;
+  platform_id: string;
+  thread_id: string | null;
+  user_id: string | null;
+  title: string;
+  options: import('./channels/ask-question.js').NormalizedOption[];
+  original_message: string;
+  created_at: string;
+}
+
 // ── Pending approvals (central DB) ──
 
 export interface PendingApproval {

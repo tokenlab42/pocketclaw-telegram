@@ -588,7 +588,7 @@ describe('createNewAgentGroup', () => {
     expect(servers.chroma).toEqual(CHROMA_MCP_SERVER);
 
     const claudeLocal = fs.readFileSync(`${TEST_DIR}/groups/${ag.folder}/CLAUDE.local.md`, 'utf-8');
-    expect(claudeLocal).toContain(stored.chroma_collection_id as string);
-    expect(claudeLocal).toContain('`news`');
+    expect(claudeLocal).not.toContain('## Long-term memory');
+    expect(claudeLocal).not.toContain('`news`');
   });
 });

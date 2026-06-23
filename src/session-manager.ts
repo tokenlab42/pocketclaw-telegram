@@ -35,6 +35,7 @@ import {
   insertMessage,
   migrateMessagesInTable,
 } from './db/session-db.js';
+import { getDb, hasTable } from './db/connection.js';
 import { log } from './log.js';
 import type { Session } from './types.js';
 
@@ -226,6 +227,36 @@ export function writeSessionMessage(
   // Extract base64 attachment data, save to inbox, replace with file paths
   const content = extractAttachmentFiles(agentGroupId, sessionId, message.id, message.content);
 
+  let finalContent = content;
+  try {
+    const contentObj = JSON.parse(content);
+    const rawHandle = contentObj.senderId || contentObj.author?.userId || contentObj.sender || null;
+    if (rawHandle) {
+      const channelType = message.channelType || null;
+      const userId = rawHandle.includes(':') ? rawHandle : (channelType ? `${channelType}:${rawHandle}` : rawHandle);
+
+      let senderRole = 'member';
+      try {
+        const centralDb = getDb();
+        if (hasTable(centralDb, 'user_roles')) {
+          const isOwner = !!centralDb.prepare("SELECT 1 FROM user_roles WHERE user_id = ? AND role = 'owner' AND agent_group_id IS NULL LIMIT 1").get(userId);
+          const isAdmin = !!centralDb.prepare("SELECT 1 FROM user_roles WHERE user_id = ? AND role = 'admin' AND agent_group_id = ? LIMIT 1").get(userId, agentGroupId);
+          if (isOwner) {
+            senderRole = 'owner';
+          } else if (isAdmin) {
+            senderRole = 'admin';
+          }
+        }
+      } catch {
+        // If DB is not initialized or any error, default to member.
+      }
+      contentObj.senderRole = senderRole;
+      finalContent = JSON.stringify(contentObj);
+    }
+  } catch {
+    // Ignore JSON parsing errors for non-JSON content.
+  }
+
   const db = openInboundDb(agentGroupId, sessionId);
   try {
     insertMessage(db, {
@@ -235,7 +266,7 @@ export function writeSessionMessage(
       platformId: message.platformId ?? null,
       channelType: message.channelType ?? null,
       threadId: message.threadId ?? null,
-      content,
+      content: finalContent,
       processAfter: message.processAfter ?? null,
       recurrence: message.recurrence ?? null,
       trigger: message.trigger ?? 1,

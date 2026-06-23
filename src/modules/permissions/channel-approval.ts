@@ -332,7 +332,7 @@ export function createNewAgentGroup(name: string): AgentGroup {
   updateAgentGroup(agId, { chroma_collection_id: collectionId });
 
   const ag = getAgentGroup(agId)!;
-  initGroupFilesystem(ag, { instructions: chromaInstructions(collectionId) });
+  initGroupFilesystem(ag);
   addMcpServer(ag.id, 'chroma', CHROMA_MCP_SERVER);
   return ag;
 }

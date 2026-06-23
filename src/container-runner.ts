@@ -414,6 +414,10 @@ async function buildContainerArgs(
   // Everything NanoClaw-specific is in container.json (read by runner at startup).
   args.push('-e', `TZ=${TIMEZONE}`);
 
+  if (agentGroup.chroma_collection_id) {
+    args.push('-e', `NANOCLAW_CHROMA_COLLECTION_ID=${agentGroup.chroma_collection_id}`);
+  }
+
   // Third-party service credentials. Global defaults come from root .env;
   // per-group agent.env (groups/<folder>/agent.env) overrides them so each
   // agent group can have its own credentials (e.g. separate AgentMail inboxes).

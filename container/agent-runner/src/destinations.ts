@@ -88,6 +88,21 @@ export function buildSystemPromptAddendum(assistantName?: string): string {
 
   sections.push(buildDestinationsSection());
 
+  const chromaCollectionId = process.env.NANOCLAW_CHROMA_COLLECTION_ID;
+  if (chromaCollectionId) {
+    sections.push([
+      '## Long-term memory (Chroma)',
+      '',
+      'You have an MCP server named `chroma` for vector-DB storage. There are exactly two collection names you are allowed to use:',
+      `- \`${chromaCollectionId}\` — your personal collection. Use this exact UUID as the \`collection_name\` for anything you'd normally put in long-term memory. Call \`chroma_create_collection\` with this name if it does not already exist — never invent your own human-readable collection name.`,
+      '- `news` — a shared collection. Normal users can only read this collection. Only owners/admins can write/modify it.',
+      '  - If the user you are talking to has `role="owner"` or `role="admin"`, you are allowed to write, add, or update the `news` collection.',
+      '  - If the user you are talking to has `role="member"` (or any other role), the `news` collection is strictly read-only for you. You can query it but MUST NOT write, add, delete, or update any entries. If a normal user asks you to save or add news, politely refuse and explain that only owners have write permissions.',
+      '',
+      "Never call `chroma_list_collections`, and never query or write to any collection name other than these two — other agents' personal collections are off-limits even if you discover their names."
+    ].join('\n'));
+  }
+
   return sections.join('\n\n');
 }
 

@@ -213,8 +213,7 @@ async function main(): Promise<void> {
     instructions:
       `# ${args.agentName}\n\n` +
       `You are ${args.agentName}, a personal NanoClaw agent for ${args.displayName}. ` +
-      'When the user first reaches out (or you receive a system welcome prompt), introduce yourself briefly and invite them to chat. Keep replies concise.' +
-      (chromaCollectionId ? chromaInstructions(chromaCollectionId) : ''),
+      'When the user first reaches out (or you receive a system welcome prompt), introduce yourself briefly and invite them to chat. Keep replies concise.',
   });
   if (chromaCollectionId) {
     addMcpServer(ag.id, 'chroma', CHROMA_MCP_SERVER);

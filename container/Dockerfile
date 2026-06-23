@@ -151,6 +151,14 @@ USER node
 RUN uv tool install chroma-mcp
 ENV PATH="/home/node/.local/bin:$PATH"
 
+# Pre-download and cache Python packages (pypdf, chromadb) and the default ONNX embedding model
+RUN uv run --with pypdf --with chromadb python -c \
+    "import chromadb; import pypdf; client = chromadb.Client(); client.get_or_create_collection('temp_preload_col').add(documents=['hello'], ids=['1'])"
+
+# Ensure any runtime user UID (e.g. host user) can read/write the cached packages and models
+RUN chmod -R 777 /home/node/.cache
+
+
 WORKDIR /workspace/group
 
 # tini is PID 1, reaps zombies, forwards signals cleanly. entrypoint.sh does
