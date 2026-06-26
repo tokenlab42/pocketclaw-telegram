@@ -193,9 +193,6 @@ async function handleFileEmbeddedFailure(content: Record<string, unknown>, sessi
   const title = 'Embedding Failed';
   const question = `Failed to store your file in long-term memory: ${errMsg}. How would you like to proceed?`;
 
-  const { sanitizeTelegramLegacyMarkdown } = await import('../../channels/telegram-markdown-sanitize.js');
-  const sanitizedQuestion = sanitizeTelegramLegacyMarkdown(question);
-
   // 1. Deliver the options card to the user
   await deliveryAdapter.deliver(
     originalEvent.channelType,
@@ -206,7 +203,7 @@ async function handleFileEmbeddedFailure(content: Record<string, unknown>, sessi
       type: 'ask_question',
       questionId,
       title,
-      question: sanitizedQuestion,
+      question,
       options,
     }),
   );
