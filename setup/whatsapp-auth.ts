@@ -47,6 +47,25 @@ const AUTH_DIR = path.join(process.cwd(), 'store', 'auth');
 const PAIRING_CODE_FILE = path.join(process.cwd(), 'store', 'pairing-code.txt');
 const baileysLogger = pino({ level: 'silent' });
 
+/** Fetch current WA Web version — wppconnect tracker, then Baileys sw.js scrape. */
+async function resolveWaWebVersion(): Promise<[number, number, number]> {
+  try {
+    const res = await fetch('https://wppconnect.io/whatsapp-versions/', {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      const html = await res.text();
+      const match = html.match(/2\.3000\.(\d+)/);
+      if (match) return [2, 3000, Number(match[1])];
+    }
+  } catch { /* fall through */ }
+  try {
+    const { version } = await fetchLatestWaWebVersion({});
+    if (version) return version as [number, number, number];
+  } catch { /* fall through */ }
+  throw new Error('Could not fetch current WhatsApp Web version — cannot connect with stale version');
+}
+
 // Baileys v6 bug: getPlatformId sends charCode (49) instead of enum value (1).
 // Fixed in Baileys 7.x but not backported. Without this patch pairing codes
 // fail with "couldn't link device" because WhatsApp receives an invalid
@@ -139,9 +158,7 @@ export async function run(args: string[]): Promise<void> {
 
     async function connectSocket(isReconnect = false): Promise<void> {
       const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-      const { version } = await fetchLatestWaWebVersion({}).catch(() => ({
-        version: undefined,
-      }));
+      const version = await resolveWaWebVersion();
 
       const sock = makeWASocket({
         version,
