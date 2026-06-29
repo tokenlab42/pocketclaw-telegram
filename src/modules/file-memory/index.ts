@@ -187,8 +187,8 @@ async function handleFileEmbeddedFailure(content: Record<string, unknown>, sessi
 
   const questionId = `file-fail-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const options = [
-    { label: '💬 Read as Short-Term Context', value: 'short-term' },
-    { label: '❌ Cancel Upload', value: 'cancel' },
+    { label: 'Read as Short-Term Context', value: 'short-term' },
+    { label: 'Cancel Upload', value: 'cancel' },
   ];
   const title = 'Embedding Failed';
   const question = `Failed to store your file in long-term memory: ${errMsg}. How would you like to proceed?`;
