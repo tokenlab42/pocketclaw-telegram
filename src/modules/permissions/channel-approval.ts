@@ -54,19 +54,22 @@ import {
   getAllAgentGroups,
   updateAgentGroup,
 } from '../../db/agent-groups.js';
-import { createContainerConfig } from '../../db/container-configs.js';
+import { createContainerConfig, getAllContainerConfigs } from '../../db/container-configs.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
 import { CHROMA_MCP_SERVER, chromaInstructions } from '../../chroma-onboarding.js';
 import { addMcpServer } from '../../db/container-configs.js';
-import { getMessagingGroup, updateMessagingGroup } from '../../db/messaging-groups.js';
+import { createMessagingGroupAgent, getMessagingGroup, updateMessagingGroup } from '../../db/messaging-groups.js';
 import { getDeliveryAdapter } from '../../delivery.js';
+import { readEnvFile } from '../../env.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { log } from '../../log.js';
 import type { InboundEvent } from '../../channels/adapter.js';
 import type { AgentGroup } from '../../types.js';
 import { pickApprovalDelivery, pickApprover } from '../approvals/primitive.js';
 import { createPendingChannelApproval, hasInFlightChannelApproval } from './db/pending-channel-approvals.js';
-import { hasAdminPrivilege } from './db/user-roles.js';
+import { addMember } from './db/agent-group-members.js';
+import { grantRole, hasAdminPrivilege } from './db/user-roles.js';
+import { routeInbound } from '../../router.js';
 import { provisionSubAgents } from '../sub-agents/provision.js';
 
 // ── Value constants (response handler in index.ts parses these) ──
@@ -79,6 +82,31 @@ export const REJECT_VALUE = 'reject';
 // approver). The sender becomes scoped admin of their own agent group and gets
 // their own container; the agent self-onboards on first wake. DM-only.
 export const PROVISION_PERSONAL_VALUE = 'provision_personal';
+
+// ── Admin whitelist ──
+
+/** Phone numbers (digits only, no +) from WHATSAPP_ADMIN_NUMBERS → auto-wire to admin agent. */
+function parseAdminNumbers(): Set<string> {
+  const raw = readEnvFile(['WHATSAPP_ADMIN_NUMBERS']).WHATSAPP_ADMIN_NUMBERS ?? '';
+  return new Set(
+    raw
+      .split(',')
+      .map((n) => n.trim().replace(/^\+/, ''))
+      .filter(Boolean),
+  );
+}
+
+/** The agent group with global CLI scope is the admin/owner agent (Nano). */
+function findGlobalAdminAgent(): AgentGroup | undefined {
+  const configs = getAllContainerConfigs();
+  const globalConfig = configs.find((c) => c.cli_scope === 'global');
+  if (!globalConfig) return undefined;
+  return getAgentGroup(globalConfig.agent_group_id);
+}
+
+// In-memory dedup for auto-provisioning (guards the brief window between
+// first message and wiring being written to DB).
+const inProgressProvisioning = new Set<string>();
 
 // ── Utilities ──
 
@@ -171,35 +199,120 @@ export interface RequestChannelApprovalInput {
 export async function requestChannelApproval(input: RequestChannelApprovalInput): Promise<void> {
   const { messagingGroupId, event } = input;
 
-  if (hasInFlightChannelApproval(messagingGroupId)) {
+  // ── 1. Admin whitelist: auto-wire to global admin agent (Nano), no approval card ──
+  const adminNumbers = parseAdminNumbers();
+  if (adminNumbers.size > 0) {
+    // Derive bare phone digits from the JID (e.g. "6590672025@s.whatsapp.net" → "6590672025")
+    const senderPhone = event.platformId.split('@')[0];
+    if (senderPhone && adminNumbers.has(senderPhone)) {
+      const adminAgent = findGlobalAdminAgent();
+      if (adminAgent) {
+        const now = new Date().toISOString();
+        const mgaId = `mga-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        createMessagingGroupAgent({
+          id: mgaId,
+          messaging_group_id: messagingGroupId,
+          agent_group_id: adminAgent.id,
+          engage_mode: 'pattern',
+          engage_pattern: '.',
+          sender_scope: 'known',
+          ignored_message_policy: 'accumulate',
+          session_mode: 'per-thread',
+          priority: 0,
+          created_at: now,
+        });
+        const userId = `${event.channelType}:${event.platformId}`;
+        addMember({ user_id: userId, agent_group_id: adminAgent.id, added_by: null, added_at: now });
+        grantRole({ user_id: userId, role: 'admin', agent_group_id: adminAgent.id, granted_by: null, granted_at: now });
+        log.info('Admin whitelist: auto-connected to admin agent', {
+          senderPhone,
+          agentGroupId: adminAgent.id,
+          messagingGroupId,
+        });
+        void routeInbound(event).catch((err) =>
+          log.error('Admin whitelist: failed to replay event', { err, senderPhone }),
+        );
+        return;
+      }
+      log.warn('Admin whitelist: matched but no global-scope admin agent found', { senderPhone });
+    }
+  }
+
+  // ── 2. Dedup guard ──
+  if (inProgressProvisioning.has(messagingGroupId) || hasInFlightChannelApproval(messagingGroupId)) {
     log.debug('Channel registration already in flight — dropping retry', { messagingGroupId });
     return;
   }
 
   const agentGroups = getAllAgentGroups();
   if (agentGroups.length === 0) {
-    log.warn('Channel registration skipped — no agent groups configured. Run /init-first-agent.', {
-      messagingGroupId,
-    });
-    return;
-  }
-  // Use first agent group for approver resolution — owners and global admins
-  // are returned regardless of which group we pass.
-  const referenceGroup = agentGroups[0];
-
-  const approvers = pickApprover(referenceGroup.id);
-  if (approvers.length === 0) {
-    log.warn('Channel registration skipped — no owner or admin configured', {
-      messagingGroupId,
-      targetAgentGroupId: referenceGroup.id,
-    });
+    log.warn('Channel registration skipped — no agent groups configured. Run /init-first-agent.', { messagingGroupId });
     return;
   }
 
   const originMg = getMessagingGroup(messagingGroupId);
+  const isDm = event.threadId === null && !event.message?.isGroup && originMg?.is_group !== 1;
+
+  // ── 3. DMs: auto-provision a personal agent — no approval card needed ──
+  if (isDm) {
+    inProgressProvisioning.add(messagingGroupId);
+    try {
+      let senderName: string | undefined;
+      try {
+        const parsed = JSON.parse(event.message.content) as Record<string, unknown>;
+        const raw = (parsed.senderName ?? parsed.sender) as string | undefined;
+        // Ignore if it looks like a JID (contains @)
+        if (raw && !raw.includes('@')) senderName = raw.trim() || undefined;
+      } catch {
+        /* non-critical */
+      }
+
+      const displayName = senderName || 'User';
+      const agentName = `${displayName}'s Assistant`;
+      const ag = provisionPersonalAgent(agentName);
+
+      const userId = `${event.channelType}:${event.platformId}`;
+      const now = new Date().toISOString();
+
+      addMember({ user_id: userId, agent_group_id: ag.id, added_by: null, added_at: now });
+
+      const mgaId = `mga-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      createMessagingGroupAgent({
+        id: mgaId,
+        messaging_group_id: messagingGroupId,
+        agent_group_id: ag.id,
+        engage_mode: 'pattern',
+        engage_pattern: '.',
+        sender_scope: 'known',
+        ignored_message_policy: 'accumulate',
+        session_mode: 'shared',
+        priority: 0,
+        created_at: now,
+      });
+
+      log.info('DM auto-provisioned personal agent', { messagingGroupId, agentGroupId: ag.id, agentName, userId });
+    } finally {
+      inProgressProvisioning.delete(messagingGroupId);
+    }
+
+    try {
+      await routeInbound(event);
+    } catch (err) {
+      log.error('Auto-provision: failed to replay message', { messagingGroupId, err });
+    }
+    return;
+  }
+
+  // ── 4. Groups: existing manual approval card flow ──
+  const referenceGroup = agentGroups[0];
+  const approvers = pickApprover(referenceGroup.id);
+  if (approvers.length === 0) {
+    log.warn('Channel registration skipped — no owner or admin configured', { messagingGroupId });
+    return;
+  }
+
   const originChannelType = originMg?.channel_type ?? '';
 
-  // Resolve channel name if not yet persisted.
   if (originMg && !originMg.name) {
     const channelAdapter = getChannelAdapter(originChannelType);
     if (channelAdapter?.resolveChannelName) {
@@ -217,31 +330,22 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
 
   const delivery = await pickApprovalDelivery(approvers, originChannelType);
   if (!delivery) {
-    log.warn('Channel registration skipped — no DM channel for any approver', {
-      messagingGroupId,
-      targetAgentGroupId: referenceGroup.id,
-    });
+    log.warn('Channel registration skipped — no DM channel for any approver', { messagingGroupId });
     return;
   }
-
-  const isGroup = event.message?.isGroup ?? originMg?.is_group === 1;
 
   let senderName: string | undefined;
   try {
     const parsed = JSON.parse(event.message.content) as Record<string, unknown>;
     senderName = (parsed.senderName ?? parsed.sender) as string | undefined;
   } catch {
-    // non-critical
+    /* non-critical */
   }
 
   const channelName = originMg?.name ?? null;
-  const title = isGroup ? '📣 Bot mentioned in new channel' : '💬 New direct message';
-  const question = buildQuestionText(isGroup, senderName, channelName, originChannelType);
-  // Personal-agent provisioning is DM-only. Treat as a DM only when no group
-  // signal is present from any source (thread id, adapter flag, or the stored
-  // messaging-group row) — this matches how the wiring handler picks engage_mode.
-  const isDm = event.threadId === null && !event.message?.isGroup && originMg?.is_group !== 1;
-  const options = normalizeOptions(buildApprovalOptions(agentGroups, delivery.userId, { isGroup: !isDm, senderName }));
+  const title = '📣 Bot mentioned in new channel';
+  const question = buildQuestionText(true, senderName, channelName, originChannelType);
+  const options = normalizeOptions(buildApprovalOptions(agentGroups, delivery.userId, { isGroup: true, senderName }));
 
   createPendingChannelApproval({
     messaging_group_id: messagingGroupId,
@@ -265,13 +369,7 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
       delivery.messagingGroup.platform_id,
       null,
       'chat-sdk',
-      JSON.stringify({
-        type: 'ask_question',
-        questionId: messagingGroupId,
-        title,
-        question,
-        options,
-      }),
+      JSON.stringify({ type: 'ask_question', questionId: messagingGroupId, title, question, options }),
     );
     log.info('Channel registration card delivered', {
       messagingGroupId,
