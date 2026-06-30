@@ -39,7 +39,7 @@ import {
 import type { GroupMetadata, WAMessageKey, WAMessage, WASocket } from '@whiskeysockets/baileys';
 
 import { isSafeAttachmentName } from '../attachment-safety.js';
-import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME, DATA_DIR } from '../config.js';
+import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
 import { registerChannelAdapter } from './channel-registry.js';
@@ -423,46 +423,62 @@ registerChannelAdapter('whatsapp', {
       }
     }
 
-    /** Download media from an inbound message, save to /workspace/attachments/. */
+    /**
+     * Max media size to inline as base64 through the session DB. Larger media
+     * is skipped with a note instead of bloating the inbound DB row. Mirrors
+     * the Chat SDK bridge's data-passing model so the host's
+     * extractAttachmentFiles() saves the file into the mounted session inbox.
+     */
+    const MAX_INLINE_MEDIA_BYTES = 10 * 1024 * 1024; // 10MB
+
+    /**
+     * Download media from an inbound message and return it as base64 `data`.
+     * The host's extractAttachmentFiles() (session-manager.ts) saves the data
+     * into <sessionDir>/inbox/<messageId>/ — which the container sees at
+     * /workspace/inbox/<messageId>/. We deliberately do NOT write to disk here:
+     * data/attachments/ is never mounted into the container.
+     */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async function downloadInboundMedia(
       msg: WAMessage,
       normalized: any,
-    ): Promise<Array<{ type: string; name: string; localPath: string }>> {
+    ): Promise<{ attachments: Array<{ type: string; name: string; data: string }>; notes: string[] }> {
       const mediaTypes: Array<{ key: string; type: string; ext: string }> = [
         { key: 'imageMessage', type: 'image', ext: '.jpg' },
         { key: 'videoMessage', type: 'video', ext: '.mp4' },
         { key: 'audioMessage', type: 'audio', ext: '.ogg' },
         { key: 'documentMessage', type: 'document', ext: '' },
       ];
-      const results: Array<{ type: string; name: string; localPath: string }> = [];
+      const attachments: Array<{ type: string; name: string; data: string }> = [];
+      const notes: string[] = [];
       for (const { key, type, ext } of mediaTypes) {
         if (!normalized[key]) continue;
         try {
-          const buffer = await downloadMediaMessage(msg, 'buffer', {});
+          const buffer = (await downloadMediaMessage(msg, 'buffer', {})) as Buffer;
           // documentMessage.fileName is attacker-controlled and rides through
-          // WhatsApp's E2E channel — Meta can't sanitize it server-side. Without
-          // this guard, a `..`-laden fileName escapes attachDir on path.join.
+          // WhatsApp's E2E channel — Meta can't sanitize it server-side. The
+          // host re-validates in extractAttachmentFiles before writing, but we
+          // pick a safe fallback here so logs/notes don't echo a hostile name.
           const rawFilename = normalized[key].fileName;
           const fallback = `${type}-${Date.now()}${ext}`;
           const filename = isSafeAttachmentName(rawFilename) ? rawFilename : fallback;
           if (rawFilename && filename !== rawFilename) {
-            log.warn('Refused unsafe attachment filename — would escape attachments dir', {
-              rawFilename,
-              replacement: filename,
-            });
+            log.warn('Refused unsafe attachment filename', { rawFilename, replacement: filename });
           }
-          const attachDir = path.join(DATA_DIR, 'attachments');
-          fs.mkdirSync(attachDir, { recursive: true });
-          const filePath = path.join(attachDir, filename);
-          fs.writeFileSync(filePath, buffer);
-          results.push({ type, name: filename, localPath: `attachments/${filename}` });
-          log.info('Media downloaded', { type, filename });
+          if (buffer.length > MAX_INLINE_MEDIA_BYTES) {
+            const mb = (buffer.length / (1024 * 1024)).toFixed(1);
+            const limitMb = MAX_INLINE_MEDIA_BYTES / (1024 * 1024);
+            log.warn('Skipping oversized media attachment', { type, filename, bytes: buffer.length });
+            notes.push(`[${type} "${filename}" was not delivered: ${mb}MB exceeds the ${limitMb}MB limit]`);
+            continue;
+          }
+          attachments.push({ type, name: filename, data: buffer.toString('base64') });
+          log.info('Media downloaded', { type, filename, bytes: buffer.length });
         } catch (err) {
           log.warn('Failed to download media', { type, err });
         }
       }
-      return results;
+      return { attachments, notes };
     }
 
     async function sendRawMessage(jid: string, text: string, mentions?: string[]): Promise<string | undefined> {
@@ -699,7 +715,13 @@ registerChannelAdapter('whatsapp', {
             }
 
             // Download media attachments (images, video, audio, documents)
-            const attachments = await downloadInboundMedia(msg, normalized);
+            const { attachments, notes } = await downloadInboundMedia(msg, normalized);
+
+            // Surface skipped-media notes (e.g. oversized files) to the agent
+            // so it can tell the user, rather than silently dropping them.
+            if (notes.length > 0) {
+              content = content ? `${content}\n\n${notes.join('\n')}` : notes.join('\n');
+            }
 
             // Skip empty protocol messages (no text and no attachments)
             if (!content && attachments.length === 0) continue;
