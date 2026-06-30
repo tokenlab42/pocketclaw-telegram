@@ -11,7 +11,7 @@ export function grantRole(row: UserRole): void {
   }
   getDb()
     .prepare(
-      `INSERT INTO user_roles (user_id, role, agent_group_id, granted_by, granted_at)
+      `INSERT OR IGNORE INTO user_roles (user_id, role, agent_group_id, granted_by, granted_at)
        VALUES (@user_id, @role, @agent_group_id, @granted_by, @granted_at)`,
     )
     .run(row);

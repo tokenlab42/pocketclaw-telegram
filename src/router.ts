@@ -170,8 +170,8 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
       if (deliveryAdapter) {
         const questionId = `file-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const options = [
-          { label: '🧠 Long-Term Memory (Chroma)', value: 'long-term' },
-          { label: '💬 Short-Term Context', value: 'short-term' },
+          { label: 'Long-Term Memory', value: 'long-term' },
+          { label: 'Short-Term Context', value: 'short-term' },
         ];
         const title = 'File Upload Memory Strategy';
         const question = 'You uploaded some file(s). How would you like to handle them?';
