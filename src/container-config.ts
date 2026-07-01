@@ -61,7 +61,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     assistantName: row.assistant_name ?? group.name,
     agentGroupId: group.id,
     maxMessagesPerPrompt: row.max_messages_per_prompt ?? undefined,
-    model: row.model ?? undefined,
+    model: row.model ?? 'claude-haiku-4-5-20251001',
     effort: row.effort ?? undefined,
   };
 }

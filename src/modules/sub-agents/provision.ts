@@ -211,7 +211,7 @@ export function provisionSubAgents(parentAgentGroupId: string, parentFolder: str
   createContainerConfig({
     agent_group_id: slidesId,
     provider: null,
-    model: 'claude-sonnet-4-6',
+    model: 'claude-haiku-4-5-20251001',
     effort: null,
     image_tag: null,
     assistant_name: 'Slides Agent',
@@ -251,7 +251,7 @@ export function provisionSubAgents(parentAgentGroupId: string, parentFolder: str
   createContainerConfig({
     agent_group_id: researcherId,
     provider: null,
-    model: 'claude-sonnet-4-6',
+    model: 'claude-haiku-4-5-20251001',
     effort: null,
     image_tag: null,
     assistant_name: 'Researcher',
