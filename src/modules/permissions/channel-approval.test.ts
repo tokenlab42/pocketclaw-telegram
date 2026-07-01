@@ -137,7 +137,7 @@ function dmEvent(platformId: string, text = 'hello') {
     message: {
       id: `msg-${Math.random().toString(36).slice(2, 8)}`,
       kind: 'chat' as const,
-      content: JSON.stringify({ senderId: 'stranger', senderName: 'Stranger', text }),
+      content: JSON.stringify({ senderId: platformId, senderName: 'Stranger', text }),
       timestamp: now(),
       isMention: true, // DM bridge sets isMention=true
     },
@@ -170,15 +170,21 @@ describe('unknown-channel registration flow', () => {
     expect(rows).toHaveLength(1);
   });
 
-  it('delivers a card on DM too (non-threaded event)', async () => {
+  it('auto-provisions a personal agent on DM (no card delivered)', async () => {
     const { routeInbound } = await import('../../router.js');
     await routeInbound(dmEvent('dm-new-user'));
     await new Promise((r) => setTimeout(r, 10));
 
-    expect(deliverMock).toHaveBeenCalledTimes(1);
+    expect(deliverMock).toHaveBeenCalledTimes(0);
     const { getDb } = await import('../../db/connection.js');
     const count = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number }).c;
-    expect(count).toBe(1);
+    expect(count).toBe(0);
+
+    const newGroup = getDb()
+      .prepare('SELECT id, name FROM agent_groups WHERE name = ?')
+      .get("Stranger's Assistant") as { id: string; name: string };
+    expect(newGroup).toBeDefined();
+    expect(newGroup.name).toBe("Stranger's Assistant");
   });
 
   it('dedups a second mention while the card is pending', async () => {
@@ -253,63 +259,38 @@ describe('unknown-channel registration flow', () => {
     expect(wakeContainer).toHaveBeenCalled();
   });
 
-  it('approve on a DM wires with pattern="." defaults', async () => {
+  it('auto-provisioned DM wires with pattern="." defaults', async () => {
     const { routeInbound } = await import('../../router.js');
-    const { getResponseHandlers } = await import('../../response-registry.js');
 
     await routeInbound(dmEvent('dm-approve-user'));
     await new Promise((r) => setTimeout(r, 10));
 
     const { getDb } = await import('../../db/connection.js');
-    const pending = getDb().prepare('SELECT messaging_group_id FROM pending_channel_approvals').get() as {
-      messaging_group_id: string;
+    const newGroup = getDb().prepare('SELECT id FROM agent_groups WHERE name = ?').get("Stranger's Assistant") as {
+      id: string;
     };
-
-    for (const handler of getResponseHandlers()) {
-      const claimed = await handler({
-        questionId: pending.messaging_group_id,
-        value: 'connect:ag-1',
-        userId: 'owner',
-        channelType: 'telegram',
-        platformId: 'dm-owner',
-        threadId: null,
-      });
-      if (claimed) break;
-    }
-
     const mga = getDb()
-      .prepare('SELECT engage_mode, engage_pattern FROM messaging_group_agents WHERE messaging_group_id = ?')
-      .get(pending.messaging_group_id) as { engage_mode: string; engage_pattern: string };
+      .prepare('SELECT engage_mode, engage_pattern FROM messaging_group_agents WHERE agent_group_id = ?')
+      .get(newGroup.id) as { engage_mode: string; engage_pattern: string };
     expect(mga.engage_mode).toBe('pattern');
     expect(mga.engage_pattern).toBe('.');
   });
 
-  it('DM card offers a "provision personal agent" option (not on group cards)', async () => {
+  it('group cards do not offer a "provision personal agent" option', async () => {
     const { routeInbound } = await import('../../router.js');
-    const { PROVISION_PERSONAL_VALUE } = await import('./channel-approval.js');
-
-    // DM → should include the provision option.
-    await routeInbound(dmEvent('dm-provision-offer'));
-    await new Promise((r) => setTimeout(r, 10));
-    const dmPayload = JSON.parse(deliverMock.mock.calls[0][4] as string) as {
-      options: Array<{ value: string }>;
-    };
-    expect(dmPayload.options.map((o) => o.value)).toContain(PROVISION_PERSONAL_VALUE);
 
     // Group mention → should NOT include it.
-    deliverMock.mockClear();
     await routeInbound(groupMention('chat-provision-offer'));
     await new Promise((r) => setTimeout(r, 10));
     const groupPayload = JSON.parse(deliverMock.mock.calls[0][4] as string) as {
       options: Array<{ value: string }>;
     };
+    const { PROVISION_PERSONAL_VALUE } = await import('./channel-approval.js');
     expect(groupPayload.options.map((o) => o.value)).not.toContain(PROVISION_PERSONAL_VALUE);
   });
 
-  it('provision personal agent → new agent, sender added as member, DM wired, replay wakes container', async () => {
+  it('auto-provisioning creates new agent, adds sender as member, wires DM, and wakes container', async () => {
     const { routeInbound } = await import('../../router.js');
-    const { getResponseHandlers } = await import('../../response-registry.js');
-    const { PROVISION_PERSONAL_VALUE } = await import('./channel-approval.js');
     const { wakeContainer } = await import('../../container-runner.js');
     (wakeContainer as unknown as ReturnType<typeof vi.fn>).mockClear();
 
@@ -317,26 +298,9 @@ describe('unknown-channel registration flow', () => {
     await new Promise((r) => setTimeout(r, 10));
 
     const { getDb } = await import('../../db/connection.js');
-    const pending = getDb().prepare('SELECT messaging_group_id FROM pending_channel_approvals').get() as {
-      messaging_group_id: string;
-    };
-    expect(pending).toBeDefined();
-
-    // Owner approves the personal-agent provisioning.
-    for (const handler of getResponseHandlers()) {
-      const claimed = await handler({
-        questionId: pending.messaging_group_id,
-        value: PROVISION_PERSONAL_VALUE,
-        userId: 'owner',
-        channelType: 'telegram',
-        platformId: 'dm-owner',
-        threadId: null,
-      });
-      if (claimed) break;
-    }
 
     // A NEW agent group was created (distinct from the seed ag-1).
-    const newGroup = getDb().prepare("SELECT id, name FROM agent_groups WHERE id != 'ag-1'").get() as
+    const newGroup = getDb().prepare('SELECT id, name FROM agent_groups WHERE name = ?').get("Stranger's Assistant") as
       | { id: string; name: string }
       | undefined;
     expect(newGroup).toBeDefined();
@@ -358,21 +322,21 @@ describe('unknown-channel registration flow', () => {
     // Sender has NO scoped role for their own group (since owner is the sole admin/owner).
     const role = getDb()
       .prepare('SELECT role, agent_group_id FROM user_roles WHERE user_id = ? AND agent_group_id = ?')
-      .get('telegram:stranger', newGroup!.id);
+      .get('telegram:dm-provision-user', newGroup!.id);
     expect(role).toBeUndefined();
 
     // Membership row present so the access gate passes on replay.
     const member = getDb()
       .prepare('SELECT 1 AS x FROM agent_group_members WHERE user_id = ? AND agent_group_id = ?')
-      .get('telegram:stranger', newGroup!.id);
+      .get('telegram:dm-provision-user', newGroup!.id);
     expect(member).toBeDefined();
 
     // DM wired to the new agent with DM defaults.
     const mga = getDb()
       .prepare(
-        'SELECT agent_group_id, engage_mode, engage_pattern, sender_scope FROM messaging_group_agents WHERE messaging_group_id = ?',
+        'SELECT agent_group_id, engage_mode, engage_pattern, sender_scope FROM messaging_group_agents WHERE agent_group_id = ?',
       )
-      .get(pending.messaging_group_id) as {
+      .get(newGroup!.id) as {
       agent_group_id: string;
       engage_mode: string;
       engage_pattern: string;
@@ -383,10 +347,7 @@ describe('unknown-channel registration flow', () => {
     expect(mga.engage_pattern).toBe('.');
     expect(mga.sender_scope).toBe('known');
 
-    // Pending row cleared, container woken via replay.
-    const stillPending = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number })
-      .c;
-    expect(stillPending).toBe(0);
+    // Replay wakes container.
     expect(wakeContainer).toHaveBeenCalled();
   });
 
