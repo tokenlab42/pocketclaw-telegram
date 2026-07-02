@@ -38,12 +38,15 @@ except ImportError:
 OUTPUT_DIR = '/workspace/agent/output'
 OUTPUT_PATH = os.path.join(OUTPUT_DIR, 'slides.pptx')
 
-# Colour palette
-NAVY   = RGBColor(0x00, 0x29, 0x5C)
-WHITE  = RGBColor(0xFF, 0xFF, 0xFF)
-SLATE  = RGBColor(0x1A, 0x1A, 0x2E)
-MUTED  = RGBColor(0xCC, 0xDD, 0xEE)
-ACCENT = RGBColor(0x00, 0x78, 0xD4)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGO_PATH = os.path.join(SCRIPT_DIR, 'assets', 'synapxe-logo.png')
+
+# Synapxe brand palette — sampled from the company logo.
+PURPLE  = RGBColor(0x5B, 0x0D, 0xF6)  # primary violet
+MAGENTA = RGBColor(0xBB, 0x03, 0xF9)  # gradient / accent magenta
+WHITE   = RGBColor(0xFF, 0xFF, 0xFF)
+SLATE   = RGBColor(0x1A, 0x1A, 0x2E)  # body text on white
+MUTED   = RGBColor(0xE3, 0xD6, 0xFB)  # subtitle text on purple
 
 
 def no_line(shape):
@@ -54,22 +57,40 @@ def add_title_slide(prs: Presentation, title: str, subtitle: str) -> None:
     layout = prs.slide_layouts[6]  # blank
     slide = prs.slides.add_slide(layout)
 
-    # Full-bleed dark background
+    # Full-bleed violet-to-magenta gradient background (Synapxe brand)
     bg = slide.background
-    bg.fill.solid()
-    bg.fill.fore_color.rgb = NAVY
+    bg.fill.gradient()
+    stops = bg.fill.gradient_stops
+    stops[0].position = 0.0
+    stops[0].color.rgb = PURPLE
+    stops[1].position = 1.0
+    stops[1].color.rgb = MAGENTA
+    bg.fill.gradient_angle = 45.0
 
-    # Decorative accent bar (left edge)
-    bar = slide.shapes.add_shape(
-        MSO_AUTO_SHAPE_TYPE.RECTANGLE,
-        Inches(0), Inches(0), Inches(0.15), prs.slide_height,
+    # White card behind the logo so it stays legible over the gradient
+    card_left, card_top = Inches(0.5), Inches(1.3)
+    card_width, card_height = Inches(3.3), Inches(1.5)
+    card = slide.shapes.add_shape(
+        MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE,
+        card_left, card_top, card_width, card_height,
     )
-    bar.fill.solid()
-    bar.fill.fore_color.rgb = ACCENT
-    no_line(bar)
+    card.fill.solid()
+    card.fill.fore_color.rgb = WHITE
+    no_line(card)
+    card.adjustments[0] = 0.08
+
+    # Logo (transparent-background PNG, sized to fit inside the card)
+    if os.path.exists(LOGO_PATH):
+        logo_height = Inches(1.0)
+        logo_width = Inches(2.8)
+        slide.shapes.add_picture(
+            LOGO_PATH,
+            card_left + Inches(0.25), card_top + Inches(0.25),
+            width=logo_width, height=logo_height,
+        )
 
     # Title
-    tx = slide.shapes.add_textbox(Inches(0.5), Inches(2.6), Inches(12.33), Inches(1.8))
+    tx = slide.shapes.add_textbox(Inches(0.5), Inches(3.2), Inches(12.33), Inches(1.6))
     tf = tx.text_frame
     tf.word_wrap = True
     p = tf.paragraphs[0]
@@ -82,7 +103,7 @@ def add_title_slide(prs: Presentation, title: str, subtitle: str) -> None:
 
     # Subtitle
     if subtitle:
-        tx2 = slide.shapes.add_textbox(Inches(0.5), Inches(4.6), Inches(12.33), Inches(0.9))
+        tx2 = slide.shapes.add_textbox(Inches(0.5), Inches(4.9), Inches(12.33), Inches(0.9))
         tf2 = tx2.text_frame
         p2 = tf2.paragraphs[0]
         p2.text = subtitle
@@ -101,13 +122,13 @@ def add_content_slide(prs: Presentation, slide_title: str, bullets: list, notes:
     bg.fill.solid()
     bg.fill.fore_color.rgb = WHITE
 
-    # Dark header bar
+    # Purple header bar
     header = slide.shapes.add_shape(
         MSO_AUTO_SHAPE_TYPE.RECTANGLE,
         Inches(0), Inches(0), prs.slide_width, Inches(1.25),
     )
     header.fill.solid()
-    header.fill.fore_color.rgb = NAVY
+    header.fill.fore_color.rgb = PURPLE
     no_line(header)
 
     # Slide title inside header
@@ -126,7 +147,7 @@ def add_content_slide(prs: Presentation, slide_title: str, bullets: list, notes:
         Inches(0), Inches(1.25), Inches(0.08), prs.slide_height - Inches(1.25),
     )
     strip.fill.solid()
-    strip.fill.fore_color.rgb = ACCENT
+    strip.fill.fore_color.rgb = MAGENTA
     no_line(strip)
 
     # Bullet content
