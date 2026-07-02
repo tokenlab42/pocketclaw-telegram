@@ -64,10 +64,14 @@ function slidesAgentInstructions(parentName: string): string {
     '- Use KB content as source material when available — cite the document',
     '- Keep bullets action-oriented and scannable; avoid full sentences',
     '- If KB has no content on the topic, build from general knowledge and note this',
+    '- Branding (Synapxe purple theme + logo on the title slide) is applied automatically',
+    '  by generate_pptx.py — never override the colors or omit the logo.',
     '',
     '## python-pptx note',
-    'Requires `python3-pptx` (already in container packages).',
-    'If missing: `apt-get install -y python3-pptx`',
+    'Requires `python-pptx`, pre-installed via pip in the base container image.',
+    'There is no `python3-pptx` apt package — never attempt `apt-get install python3-pptx`,',
+    'it does not exist and will fail. If the import fails, tell the parent/user and stop —',
+    'this means the base image needs a rebuild, not a runtime install.',
   ].join('\n');
 }
 
@@ -218,7 +222,9 @@ export function provisionSubAgents(parentAgentGroupId: string, parentFolder: str
     max_messages_per_prompt: null,
     skills: JSON.stringify('all'),
     mcp_servers: JSON.stringify({}),
-    packages_apt: JSON.stringify(['python3-pptx']),
+    // python-pptx ships in the base image (see container/Dockerfile) — no
+    // per-group apt package needed. python3-pptx is not a real apt package.
+    packages_apt: JSON.stringify([]),
     packages_npm: JSON.stringify([]),
     additional_mounts: JSON.stringify([]),
     cli_scope: 'group',

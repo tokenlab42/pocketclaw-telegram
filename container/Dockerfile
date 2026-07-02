@@ -26,6 +26,7 @@ ARG VERCEL_VERSION=52.2.1
 ARG CALENDAR_MCP_VERSION=2.6.1
 ARG BUN_VERSION=1.3.12
 ARG UV_VERSION=0.11.21
+ARG PYTHON_PPTX_VERSION=1.0.2
 
 # ---- System dependencies -----------------------------------------------------
 # tini: correct PID 1 / signal forwarding so outbound.db writes finalize on
@@ -54,10 +55,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         git \
         tini \
         unzip \
+        python3 \
+        python3-pip \
     && if [ "$INSTALL_CJK_FONTS" = "true" ]; then \
         apt-get install -y --no-install-recommends fonts-noto-cjk; \
        fi \
     && rm -rf /var/lib/apt/lists/*
+
+# python-pptx (container/skills/slides) is PyPI-only — there is no
+# python3-pptx apt package in Debian, despite what an earlier version of
+# this codebase assumed. Pin + --break-system-packages since Debian's
+# system pip is PEP 668-managed.
+RUN pip3 install --no-cache-dir --break-system-packages "python-pptx==${PYTHON_PPTX_VERSION}"
 
 # Chromium path for agent-browser / Playwright consumers
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
