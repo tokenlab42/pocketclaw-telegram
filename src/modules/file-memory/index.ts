@@ -131,6 +131,12 @@ async function handleFileEmbeddedSuccess(content: Record<string, unknown>, sessi
     return;
   }
 
+  // If this is a background news ingestion, we do not need to re-route or print chat confirmations
+  if (originalEvent.message?.id?.startsWith('news-')) {
+    log.info('Successfully embedded background news thread', { threadId: originalEvent.message.id });
+    return;
+  }
+
   // 1. Route the original message back into the system, bypassing the file memory interceptor
   await routeInbound({
     ...originalEvent,
