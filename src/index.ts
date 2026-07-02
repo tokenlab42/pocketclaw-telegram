@@ -181,6 +181,10 @@ async function main(): Promise<void> {
   startHostSweep();
   log.info('Host sweep started');
 
+  // 6b. Start AgentMail news poller
+  const { startAgentMailPoll } = await import('./modules/agentmail-poll/index.js');
+  startAgentMailPoll();
+
   // 7. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
 

@@ -177,12 +177,6 @@ export function migrateGroupsToClaudeLocal(): void {
     }
   }
 
-  const globalDir = path.join(GROUPS_DIR, 'global');
-  if (fs.existsSync(globalDir)) {
-    fs.rmSync(globalDir, { recursive: true, force: true });
-    actions.push('groups/global/ removed');
-  }
-
   if (actions.length > 0) {
     log.info('Migrated groups to CLAUDE.local.md model', { actions });
   }
