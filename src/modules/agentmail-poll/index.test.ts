@@ -82,7 +82,7 @@ describe('AgentMail news poller', () => {
     stopAgentMailPoll();
   });
 
-  it('successfully polls, filters #news, writes markdown, and triggers embedding', async () => {
+  it('successfully polls, filters MOH Media Report, writes markdown, and triggers embedding', async () => {
     const fetchSpy = vi.fn().mockImplementation((url: string) => {
       if (url.endsWith('/inboxes')) {
         return Promise.resolve({
@@ -92,7 +92,7 @@ describe('AgentMail news poller', () => {
       }
       if (url.includes('/threads')) {
         // Verify that the query parameter was passed correctly
-        expect(url).toContain('query=%23news');
+        expect(url).toContain('query=MOH%20Media%20Report');
         return Promise.resolve({
           ok: true,
           json: () =>
@@ -100,7 +100,7 @@ describe('AgentMail news poller', () => {
               threads: [
                 {
                   thread_id: 'thread-news-1',
-                  subject: '#news Check out this awesome!',
+                  subject: 'FW: MOH Media Report (3 July 2026)',
                   timestamp: '2026-07-02T00:00:00.000Z',
                   senders: ['reporter@news.com'],
                   preview: 'Breaking news: AgentMail is integrated!',
@@ -158,13 +158,13 @@ describe('AgentMail news poller', () => {
     expect(fs.existsSync(mdPath)).toBe(true);
 
     const fileContent = fs.readFileSync(mdPath, 'utf-8');
-    expect(fileContent).toContain('# Email Thread: #news Check out this awesome!');
+    expect(fileContent).toContain('# Email Thread: FW: MOH Media Report (3 July 2026)');
     expect(fileContent).toContain('Breaking news: AgentMail is integrated! (with full content)');
 
     // Verify database processed_email_threads row was inserted
     const row = db.prepare('SELECT * FROM processed_email_threads WHERE thread_id = ?').get('thread-news-1') as any;
     expect(row).toBeDefined();
-    expect(row.subject).toBe('#news Check out this awesome!');
+    expect(row.subject).toBe('FW: MOH Media Report (3 July 2026)');
 
     // Verify session message was written to inbound.db
     const { findSessionByAgentGroup } = await import('../../db/sessions.js');
@@ -188,5 +188,26 @@ describe('AgentMail news poller', () => {
     expect(wakeContainerMock).toHaveBeenCalled();
 
     stopAgentMailPoll();
+  });
+
+  describe('isMOHMediaReportSubject', () => {
+    it('matches valid MOH Media Report subjects with different forward/reply prefixes', async () => {
+      const { isMOHMediaReportSubject } = await import('./index.js');
+      expect(isMOHMediaReportSubject('MOH Media Report (3 July 2026)')).toBe(true);
+      expect(isMOHMediaReportSubject('FW: MOH Media Report (3 July 2026)')).toBe(true);
+      expect(isMOHMediaReportSubject('Fwd: MOH Media Report')).toBe(true);
+      expect(isMOHMediaReportSubject('RE: MOH Media Report (3 July)')).toBe(true);
+      expect(isMOHMediaReportSubject('FW: Fwd: RE: MOH Media Report (3 July)')).toBe(true);
+      expect(isMOHMediaReportSubject('[EXTERNAL] FW: MOH Media Report')).toBe(true);
+      expect(isMOHMediaReportSubject('   fw:   [external]  moh media report  ')).toBe(true);
+    });
+
+    it('rejects subjects that do not start with MOH Media Report', async () => {
+      const { isMOHMediaReportSubject } = await import('./index.js');
+      expect(isMOHMediaReportSubject('MOH Media Updates')).toBe(false);
+      expect(isMOHMediaReportSubject('Check out MOH Media Report')).toBe(false);
+      expect(isMOHMediaReportSubject('Something else')).toBe(false);
+      expect(isMOHMediaReportSubject('')).toBe(false);
+    });
   });
 });

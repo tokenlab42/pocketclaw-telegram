@@ -56,6 +56,22 @@ function markThreadProcessed(threadId: string, subject: string): void {
     .run(threadId, subject, new Date().toISOString());
 }
 
+export function isMOHMediaReportSubject(subject: string): boolean {
+  let clean = subject.trim().toLowerCase();
+  let stripped = true;
+  while (stripped) {
+    stripped = false;
+    const prefixes = ['fw:', 'fwd:', 're:', '[fw:]', '[fwd:]', '[re:]', '[external]'];
+    for (const prefix of prefixes) {
+      if (clean.startsWith(prefix)) {
+        clean = clean.slice(prefix.length).trim();
+        stripped = true;
+      }
+    }
+  }
+  return clean.startsWith('moh media report');
+}
+
 async function fetchJson<T = any>(url: string, apiKey: string): Promise<T> {
   const res = await fetch(url, {
     headers: {
@@ -86,25 +102,24 @@ async function pollInbox(apiKey: string, email: string): Promise<void> {
   }
   const inboxId = match.inbox_id;
 
-  // 3. Fetch Threads matching #news
+  // 3. Fetch Threads matching MOH Media Report
   const threadsData = await fetchJson<{ threads?: Thread[] }>(
-    `${BASE_URL}/inboxes/${encodeURIComponent(inboxId)}/threads?query=${encodeURIComponent('#news')}&limit=10`,
+    `${BASE_URL}/inboxes/${encodeURIComponent(inboxId)}/threads?query=${encodeURIComponent('MOH Media Report')}&limit=10`,
     apiKey,
   );
   const threads = threadsData.threads ?? [];
 
-  // Filter for unprocessed threads that start with #news
+  // Filter for unprocessed threads that match MOH Media Report subject pattern
   const newsThreads = threads.filter((t) => {
-    const subject = (t.subject ?? '').trim().toLowerCase();
-    const startsWithNews = subject.startsWith('#news') || subject.startsWith('[#news]');
-    return startsWithNews && !isThreadProcessed(t.thread_id);
+    const subject = t.subject ?? '';
+    return isMOHMediaReportSubject(subject) && !isThreadProcessed(t.thread_id);
   });
 
   if (newsThreads.length === 0) {
     return;
   }
 
-  log.info(`AgentMail news poll: found ${newsThreads.length} new #news email(s) to process.`);
+  log.info(`AgentMail news poll: found ${newsThreads.length} new MOH Media Report email(s) to process.`);
 
   for (const thread of newsThreads) {
     try {
