@@ -72,6 +72,230 @@ export function isMOHMediaReportSubject(subject: string): boolean {
   return clean.startsWith('moh media report');
 }
 
+export interface ParsedArticle {
+  category: string;
+  title: string;
+  cleanLink: string;
+  linkText: string;
+  description: string;
+  number?: string;
+}
+
+export interface ParsedReport {
+  date: string;
+  formattedDate: string;
+  sections: {
+    category: string;
+    articles: ParsedArticle[];
+  }[];
+}
+
+export function cleanUrl(urlStr: string): string {
+  try {
+    const url = new URL(urlStr);
+    const nestedUrl = url.searchParams.get('url');
+    if (nestedUrl) {
+      return decodeURIComponent(nestedUrl);
+    }
+  } catch {
+    // Ignore and return original
+  }
+  return urlStr;
+}
+
+export function cleanAllLinksInText(text: string): string {
+  let cleaned = text.replace(/<(https?:\/\/[^>]+)>/g, (match, url) => {
+    return `<${cleanUrl(url)}>`;
+  });
+  cleaned = cleaned.replace(/(?<!<)(https?:\/\/[^\s\)]+)/g, (match, url) => {
+    return cleanUrl(url);
+  });
+  return cleaned;
+}
+
+export function extractReportDate(text: string, subject: string): string {
+  const candidates = [subject, text];
+  for (const candidate of candidates) {
+    const match = candidate.match(
+      /MOH\s+Media\s+Report\s+(?:Test\s+)?(?:(?:[\(\[])?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}\s+[A-Za-z]+)\b)/i,
+    );
+    if (match) {
+      return match[1].trim();
+    }
+  }
+  return new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+export function formatDateToYYYYMMDD(dateStr: string): string {
+  try {
+    const clean = dateStr.replace(/[\(\)\[\]]/g, '').trim();
+    const months: Record<string, string> = {
+      jan: '01',
+      feb: '02',
+      mar: '03',
+      apr: '04',
+      may: '05',
+      jun: '06',
+      jul: '07',
+      aug: '08',
+      sep: '09',
+      oct: '10',
+      nov: '11',
+      dec: '12',
+      january: '01',
+      february: '02',
+      march: '03',
+      april: '04',
+      june: '06',
+      july: '07',
+      august: '08',
+      september: '09',
+      october: '10',
+      november: '11',
+      december: '12',
+    };
+    const parts = clean.split(/\s+/);
+    const day = parts[0].padStart(2, '0');
+    const monthName = parts[1].toLowerCase();
+    const month = months[monthName] || '01';
+    let year = parts[2] || new Date().getFullYear().toString();
+    if (year.length === 2) year = '20' + year;
+    return `${year}-${month}-${day}`;
+  } catch {
+    return new Date().toISOString().split('T')[0];
+  }
+}
+
+function isHeading(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.length < 3 || trimmed.length > 50) return false;
+  if (!/^[A-Z0-9\s&\-\/]+$/.test(trimmed)) return false;
+  const excludes = ['FW', 'FWD', 'RE', 'FROM', 'TO', 'DATE', 'SUBJECT', 'MOH MEDIA REPORT'];
+  if (excludes.includes(trimmed)) return false;
+  return true;
+}
+
+export function parseMOHMediaReport(text: string, subject: string): ParsedReport {
+  const lines = text.split('\n');
+  const reportDateStr = extractReportDate(text, subject);
+  const formattedDate = formatDateToYYYYMMDD(reportDateStr);
+
+  const sections: { category: string; articles: ParsedArticle[] }[] = [];
+  let currentCategory = '';
+  let currentArticles: ParsedArticle[] = [];
+
+  const flushSection = () => {
+    if (currentCategory && currentArticles.length > 0) {
+      sections.push({ category: currentCategory, articles: [...currentArticles] });
+    }
+    currentArticles = [];
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+
+    if (isHeading(line)) {
+      flushSection();
+      currentCategory = line;
+      i++;
+      continue;
+    }
+
+    if (currentCategory) {
+      const numberedMatch = line.match(/^(\d+)\)\s*(.*)/);
+      const isNumbered = !!numberedMatch;
+      const hasLink = line.includes('http://') || line.includes('https://') || line.includes('<http');
+
+      if (isNumbered || (hasLink && line.length > 15)) {
+        const articleLine = isNumbered ? numberedMatch![2].trim() : line;
+        const number = isNumbered ? numberedMatch![1] : undefined;
+
+        let titleText = articleLine;
+        let cleanLink = '';
+        let linkText = '';
+
+        const urlMatch = articleLine.match(/(.*?)<(https?:\/\/[^>]+)>(.*)/);
+        if (urlMatch) {
+          titleText = urlMatch[1].trim();
+          cleanLink = cleanUrl(urlMatch[2].trim());
+          const rest = urlMatch[3].trim();
+          const sourceMatch = rest.match(/^\(([^)]+)\)/) || rest.match(/^([^)]+)/);
+          if (sourceMatch) {
+            linkText = sourceMatch[1].trim();
+          }
+        }
+
+        let description = '';
+        i++;
+
+        while (i < lines.length) {
+          const nextRawLine = lines[i];
+          const nextLine = nextRawLine.trim();
+
+          if (isHeading(nextLine)) {
+            break;
+          }
+
+          if (nextLine.match(/^\d+\)\s+/)) {
+            break;
+          }
+
+          const nextHasLink =
+            nextLine.includes('http://') || nextLine.includes('https://') || nextLine.includes('<http');
+          if (nextHasLink) {
+            if (!isNumbered && nextLine.length > 15) {
+              break;
+            }
+            i++;
+            continue;
+          }
+
+          if (nextLine !== '') {
+            description += (description ? '\n' : '') + nextRawLine;
+          } else if (description !== '') {
+            let lookAhead = i + 1;
+            let peekLine = '';
+            while (lookAhead < lines.length && peekLine === '') {
+              peekLine = lines[lookAhead].trim();
+              lookAhead++;
+            }
+            if (
+              isHeading(peekLine) ||
+              peekLine.match(/^\d+\)\s+/) ||
+              (!isNumbered && peekLine.includes('<http') && peekLine.length > 15)
+            ) {
+              break;
+            }
+            description += '\n';
+          }
+          i++;
+        }
+
+        currentArticles.push({
+          category: currentCategory,
+          title: titleText,
+          cleanLink,
+          linkText,
+          description: cleanAllLinksInText(description).trim(),
+          number,
+        });
+
+        continue;
+      }
+    }
+    i++;
+  }
+
+  flushSection();
+
+  return {
+    date: reportDateStr,
+    formattedDate,
+    sections,
+  };
+}
+
 async function fetchJson<T = any>(url: string, apiKey: string): Promise<T> {
   const res = await fetch(url, {
     headers: {
@@ -138,9 +362,10 @@ async function pollInbox(apiKey: string, email: string): Promise<void> {
         continue;
       }
 
-      // 5. Format as Markdown
-      let md = `# Email Thread: ${subject}\n\n`;
-      for (const msg of messages) {
+      // 5. Gather full text from the latest message in the thread (disregarding historical/stale replies)
+      let combinedText = '';
+      if (messages.length > 0) {
+        const msg = messages[0];
         let fullText = msg.preview ?? '';
         try {
           const detail = await fetchJson<{ text?: string; extracted_text?: string }>(
@@ -154,21 +379,64 @@ async function pollInbox(apiKey: string, email: string): Promise<void> {
             err,
           });
         }
-
-        const date = msg.timestamp ? new Date(msg.timestamp).toLocaleString() : '(unknown date)';
-        md += `**From:** ${msg.from ?? '(unknown)'}  \n`;
-        if (msg.to?.length) md += `**To:** ${msg.to.join(', ')}  \n`;
-        md += `**Date:** ${date}\n\n`;
-        md += `---\n\n`;
-        md += `${fullText.trim()}\n\n`;
+        combinedText = fullText;
       }
 
-      // 6. Save file to groups/global/news/
+      // 6. Parse Media Report into Index summary and Article files
+      const parsed = parseMOHMediaReport(combinedText, subject);
+      const dateKey = parsed.formattedDate;
+
+      // Re-number all parsed articles sequentially across all sections
+      let nextNum = 1;
+      for (const sec of parsed.sections) {
+        for (const art of sec.articles) {
+          art.number = String(nextNum);
+          nextNum++;
+        }
+      }
+
+      // 6a. Format Report summary markdown
+      let reportMd = `# MOH Media Report (${parsed.date})\n\n`;
+      for (const sec of parsed.sections) {
+        reportMd += `## ${sec.category}\n\n`;
+        for (const art of sec.articles) {
+          const numPrefix = art.number ? `${art.number}) ` : '';
+          const srcSuffix = art.linkText ? ` (${art.linkText})` : '';
+          reportMd += `* ${numPrefix}${art.title}${srcSuffix}\n`;
+        }
+        reportMd += `\n`;
+      }
+
+      // 6b. Save files to global news directory and prepare attachments to embed
+      const attachments: { name: string; localPath: string }[] = [];
       const globalNewsDir = path.join(GROUPS_DIR, 'global', 'news');
       fs.mkdirSync(globalNewsDir, { recursive: true });
-      const mdFilename = `${thread.thread_id}.md`;
-      const filePath = path.join(globalNewsDir, mdFilename);
-      fs.writeFileSync(filePath, md, 'utf-8');
+
+      // Save report index
+      const reportFilename = `report-${dateKey}.md`;
+      fs.writeFileSync(path.join(globalNewsDir, reportFilename), reportMd, 'utf-8');
+      attachments.push({
+        name: reportFilename,
+        localPath: `global/news/${reportFilename}`,
+      });
+
+      // Save individual articles
+      for (const sec of parsed.sections) {
+        for (const art of sec.articles) {
+          let artMd = `# [${sec.category}] ${art.number ? `${art.number}) ` : ''}${art.title}\n\n`;
+          if (art.cleanLink) {
+            artMd += `**Source:** [${art.linkText || 'Link'}](${art.cleanLink})\n\n`;
+          }
+          artMd += `**Content:**\n${art.description}\n`;
+
+          const artFilename = `article-${dateKey}-${art.number}.md`;
+          fs.writeFileSync(path.join(globalNewsDir, artFilename), artMd, 'utf-8');
+          attachments.push({
+            name: artFilename,
+            localPath: `global/news/${artFilename}`,
+          });
+        }
+      }
 
       // 7. Write system embedding message to the admin agent group
       // Use 'agent-shared' mode to get the primary administrative/global session of the admin agent.
@@ -181,12 +449,7 @@ async function pollInbox(apiKey: string, email: string): Promise<void> {
         timestamp: new Date().toISOString(),
         content: JSON.stringify({
           action: 'embed_file',
-          attachments: [
-            {
-              name: mdFilename,
-              localPath: `global/news/${mdFilename}`,
-            },
-          ],
+          attachments,
           collectionId: 'news',
           originalEvent: {
             message: {

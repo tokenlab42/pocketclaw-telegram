@@ -32,12 +32,17 @@ export function chromaInstructions(collectionId: string): string {
     'chroma_create_collection with this name if it does not already exist — never invent ' +
     'your own human-readable collection name.\n' +
     '- `news` — a collection shared by every agent. Anyone can read or write here. ' +
-    'For any chunk retrieved from the `news` collection, the `source` field in its metadata ' +
-    'contains the filename (e.g. `thread-123.md`). You can read the full, structured file ' +
+    'The collection contains daily news indexes named `report-YYYY-MM-DD.md` and individual ' +
+    'news articles named `article-YYYY-MM-DD-X.md`. For any chunk retrieved from the `news` collection, ' +
+    'the `source` field in its metadata contains the filename. You can read the full, structured file ' +
     'directly from the filesystem at `/workspace/global/news/{source}` using your command ' +
-    'execution tools if a chunk is cut off or if you need to fetch links/original formatting. ' +
-    'CRITICAL: Whenever the user asks you for news, updates, or newsletters, you MUST query ' +
-    'this shared `news` collection in Chroma first to retrieve the latest updates before answering.\n\n' +
+    'execution tools. CRITICAL: Whenever the user asks you for news, updates, or newsletters, you MUST query ' +
+    'this shared `news` collection in Chroma first. Retrieve the latest `report-*.md` file, read its content, ' +
+    'and present it to the user as a clean, categorized table of contents grouped by section headers. For ' +
+    'each article, output a bullet point with its number, title as a clickable link, and source name. Do not ' +
+    'output the full descriptions for all articles upfront; instruct the user to ask or reply with the ' +
+    'article number if they want to read the full content of a specific news article. If they do ask, read ' +
+    'the corresponding `article-*.md` file to retrieve the description.\n\n' +
     'Never call chroma_list_collections, and never query or write to any collection name ' +
     "other than these two — other agents' personal collections are off-limits even if you " +
     'discover their names.\n'
