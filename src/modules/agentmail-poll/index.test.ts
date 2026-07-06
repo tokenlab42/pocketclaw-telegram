@@ -82,7 +82,7 @@ describe('AgentMail news poller', () => {
     stopAgentMailPoll();
   });
 
-  it('successfully polls, filters MOH Media Report, writes markdown, and triggers embedding', async () => {
+  it('successfully polls, filters MOH Media Report, parses, writes index and articles, and triggers embedding', async () => {
     const fetchSpy = vi.fn().mockImplementation((url: string) => {
       if (url.endsWith('/inboxes')) {
         return Promise.resolve({
@@ -138,7 +138,20 @@ describe('AgentMail news poller', () => {
           ok: true,
           json: () =>
             Promise.resolve({
-              text: 'Breaking news: AgentMail is integrated! (with full content)',
+              text: `
+CYBERSECURITY NEWS
+
+Singapore Expands Cybersecurity Measures Amid AI-Driven Threats<https://ddei5-0-ctp.trendmicro.com:443/wis/clicktime/v1/query?url=https%3a%2f%2fopengovasia.com%2fsingapore-expands-cybersecurity-measures-amid-ai-driven-threats%2f&umid=123> (OpenGov Asia, 1 Jul)
+
+CSA's Singapore Cyber Landscape 2025/2026 report...
+
+STANDARDS AND REGULATIONS
+
+1)      Non-emergency 1777 ambulance hotline to cease from Jan 1, 2027<https://ddei5-0-ctp.trendmicro.com:443/wis/clicktime/v1/query?url=https%3a%2f%2fwww.straitstimes.com%2fsingapore%2fnon-emergency-1777&umid=123> (ST Online, 1 Jul)
+SCDF to cease non-emergency hotline 1777 in 2027<https://content.isentia.io/?url=https%3a%2f%2fwww.channelnewsasia.com%2f> (CNA Online, 1 Jul)
+
+The Singapore Civil Defence Force's (SCDF)...
+`,
             }),
         });
       }
@@ -153,13 +166,38 @@ describe('AgentMail news poller', () => {
     // Give asynchronous polling chain a brief moment to complete the details fetch
     await new Promise((r) => setTimeout(r, 200));
 
-    // Verify Markdown file was written to the global news dir
-    const mdPath = path.join(GROUPS_DIR, 'global', 'news', 'thread-news-1.md');
-    expect(fs.existsSync(mdPath)).toBe(true);
+    // Verify report index was written with decoded and cleaned links
+    const reportPath = path.join(GROUPS_DIR, 'global', 'news', 'report-2026-07-03.md');
+    expect(fs.existsSync(reportPath)).toBe(true);
+    const reportContent = fs.readFileSync(reportPath, 'utf-8');
+    expect(reportContent).toContain('# MOH Media Report (3 July 2026)');
+    expect(reportContent).toContain('## CYBERSECURITY NEWS');
+    expect(reportContent).toContain('## STANDARDS AND REGULATIONS');
+    expect(reportContent).toContain(
+      '* 1) Singapore Expands Cybersecurity Measures Amid AI-Driven Threats (OpenGov Asia, 1 Jul)',
+    );
+    expect(reportContent).toContain(
+      '* 2) Non-emergency 1777 ambulance hotline to cease from Jan 1, 2027 (ST Online, 1 Jul)',
+    );
 
-    const fileContent = fs.readFileSync(mdPath, 'utf-8');
-    expect(fileContent).toContain('# Email Thread: FW: MOH Media Report (3 July 2026)');
-    expect(fileContent).toContain('Breaking news: AgentMail is integrated! (with full content)');
+    // Verify individual article files were written
+    const art1Path = path.join(GROUPS_DIR, 'global', 'news', 'article-2026-07-03-1.md');
+    const art2Path = path.join(GROUPS_DIR, 'global', 'news', 'article-2026-07-03-2.md');
+    expect(fs.existsSync(art1Path)).toBe(true);
+    expect(fs.existsSync(art2Path)).toBe(true);
+
+    const art1Content = fs.readFileSync(art1Path, 'utf-8');
+    expect(art1Content).toContain(
+      '# [CYBERSECURITY NEWS] 1) Singapore Expands Cybersecurity Measures Amid AI-Driven Threats',
+    );
+    expect(art1Content).toContain("CSA's Singapore Cyber Landscape 2025/2026 report...");
+
+    const art2Content = fs.readFileSync(art2Path, 'utf-8');
+    expect(art2Content).toContain(
+      '# [STANDARDS AND REGULATIONS] 2) Non-emergency 1777 ambulance hotline to cease from Jan 1, 2027',
+    );
+    expect(art2Content).toContain("The Singapore Civil Defence Force's (SCDF)...");
+    expect(art2Content).not.toContain('CNA Online'); // Secondary source should be discarded
 
     // Verify database processed_email_threads row was inserted
     const row = db.prepare('SELECT * FROM processed_email_threads WHERE thread_id = ?').get('thread-news-1') as any;
@@ -181,8 +219,10 @@ describe('AgentMail news poller', () => {
     const content = JSON.parse(sdbRow.content);
     expect(content.action).toBe('embed_file');
     expect(content.collectionId).toBe('news');
-    expect(content.attachments[0].name).toBe('thread-news-1.md');
-    expect(content.attachments[0].localPath).toBe('global/news/thread-news-1.md');
+    expect(content.attachments).toHaveLength(3); // index report + 2 articles
+    expect(content.attachments[0].name).toBe('report-2026-07-03.md');
+    expect(content.attachments[1].name).toBe('article-2026-07-03-1.md');
+    expect(content.attachments[2].name).toBe('article-2026-07-03-2.md');
 
     // Verify wakeContainer was triggered
     expect(wakeContainerMock).toHaveBeenCalled();
@@ -208,6 +248,42 @@ describe('AgentMail news poller', () => {
       expect(isMOHMediaReportSubject('Check out MOH Media Report')).toBe(false);
       expect(isMOHMediaReportSubject('Something else')).toBe(false);
       expect(isMOHMediaReportSubject('')).toBe(false);
+    });
+  });
+
+  describe('URL Cleaning & Parsing helpers', () => {
+    it('cleans TrendMicro and Isentia redirect URLs', async () => {
+      const { cleanUrl } = await import('./index.js');
+      const tm =
+        'https://ddei5-0-ctp.trendmicro.com:443/wis/clicktime/v1/query?url=https%3a%2f%2fwww.straitstimes.com%2fsingapore%2fnon-emergency-1777&umid=123';
+      const isentia = 'https://content.isentia.io/?url=https%3a%2f%2fwww.channelnewsasia.com%2f';
+      const normal = 'https://www.google.com';
+
+      expect(cleanUrl(tm)).toBe('https://www.straitstimes.com/singapore/non-emergency-1777');
+      expect(cleanUrl(isentia)).toBe('https://www.channelnewsasia.com/');
+      expect(cleanUrl(normal)).toBe('https://www.google.com');
+    });
+
+    it('cleans all links inside a block of text', async () => {
+      const { cleanAllLinksInText } = await import('./index.js');
+      const input =
+        'Read more here <https://ddei5-0-ctp.trendmicro.com:443/wis/clicktime/v1/query?url=https%3a%2f%2fwww.straitstimes.com%2f> or visit https://content.isentia.io/?url=https%3a%2f%2fwww.zaobao.com.sg';
+      const expected = 'Read more here <https://www.straitstimes.com/> or visit https://www.zaobao.com.sg';
+      expect(cleanAllLinksInText(input)).toBe(expected);
+    });
+
+    it('extracts date from subject or text', async () => {
+      const { extractReportDate } = await import('./index.js');
+      expect(extractReportDate('', 'FW: MOH Media Report (3 July 2026)')).toBe('3 July 2026');
+      expect(extractReportDate('Subject: MOH Media Report 2 Jul 2026\nDear staff', '')).toBe('2 Jul 2026');
+      expect(extractReportDate('', 'FWD: [EXTERNAL] MOH Media Report 2 Jul')).toBe('2 Jul');
+    });
+
+    it('formats date to YYYY-MM-DD', async () => {
+      const { formatDateToYYYYMMDD } = await import('./index.js');
+      expect(formatDateToYYYYMMDD('3 July 2026')).toBe('2026-07-03');
+      expect(formatDateToYYYYMMDD('2 Jul 2026')).toBe('2026-07-02');
+      expect(formatDateToYYYYMMDD('2 Jul')).toBe(`${new Date().getFullYear()}-07-02`);
     });
   });
 });
