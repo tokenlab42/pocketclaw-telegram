@@ -117,7 +117,7 @@ export function extractReportDate(text: string, subject: string): string {
   const candidates = [subject, text];
   for (const candidate of candidates) {
     const match = candidate.match(
-      /MOH\s+Media\s+Report\s+(?:Test\s+)?(?:(?:[\(\[])?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}\s+[A-Za-z]+)\b)/i,
+      /MOH\s+Media\s+Report\s+(?:Test\s+)?(?:(?:[\(\[])?\s*(?:\d{1,2}\s*[-–—]\s*)?(\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{1,2}\s+[A-Za-z]+)\b)/i,
     );
     if (match) {
       return match[1].trim();

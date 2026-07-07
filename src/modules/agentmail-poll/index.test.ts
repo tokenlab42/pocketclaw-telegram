@@ -277,6 +277,8 @@ The Singapore Civil Defence Force's (SCDF)...
       expect(extractReportDate('', 'FW: MOH Media Report (3 July 2026)')).toBe('3 July 2026');
       expect(extractReportDate('Subject: MOH Media Report 2 Jul 2026\nDear staff', '')).toBe('2 Jul 2026');
       expect(extractReportDate('', 'FWD: [EXTERNAL] MOH Media Report 2 Jul')).toBe('2 Jul');
+      expect(extractReportDate('', 'FW: MOH Media Report 4-6 July 2026')).toBe('6 July 2026');
+      expect(extractReportDate('', 'FW: MOH Media Report 4 - 6 July 2026')).toBe('6 July 2026');
     });
 
     it('formats date to YYYY-MM-DD', async () => {
