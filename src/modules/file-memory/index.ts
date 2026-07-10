@@ -1,10 +1,14 @@
+import fs from 'fs';
+import path from 'path';
+
+import { GROUPS_DIR } from '../../config.js';
 import { getDb, hasTable } from '../../db/connection.js';
-import { getPendingFileMessage, deletePendingFileMessage, getSession } from '../../db/sessions.js';
+import { getPendingFileMessage, deletePendingFileMessage, getSession, getActiveSessions } from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
 import { registerResponseHandler, type ResponsePayload } from '../../response-registry.js';
 import { log } from '../../log.js';
 import { routeInbound } from '../../router.js';
-import { getMessagingGroupAgents, getMessagingGroupByPlatform } from '../../db/messaging-groups.js';
+import { getMessagingGroupAgents, getMessagingGroupByPlatform, getMessagingGroup } from '../../db/messaging-groups.js';
 import { getAgentGroup } from '../../db/agent-groups.js';
 import { resolveSession, writeSessionMessage } from '../../session-manager.js';
 import type { InboundEvent } from '../../channels/adapter.js';
@@ -122,7 +126,26 @@ async function handleFileMemoryChoice(payload: ResponsePayload): Promise<boolean
 
 registerResponseHandler(handleFileMemoryChoice);
 
-async function handleFileEmbeddedSuccess(content: Record<string, unknown>, session: Session): Promise<void> {
+function formatIndexForBroadcast(markdown: string): string {
+  const lines = markdown.split('\n');
+  const formattedLines: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('# ')) {
+      const dateStr = trimmed.slice(2);
+      formattedLines.push(`*${dateStr}*`);
+    } else if (trimmed.startsWith('## ')) {
+      const category = trimmed.slice(3);
+      formattedLines.push(`\n*${category}*`);
+    } else if (trimmed.startsWith('* ')) {
+      formattedLines.push(trimmed);
+    }
+  }
+  formattedLines.push('\nReply with a number if you want to read the full article.');
+  return formattedLines.join('\n').trim();
+}
+
+export async function handleFileEmbeddedSuccess(content: Record<string, unknown>, session: Session): Promise<void> {
   log.info('Handling file_embedded_success system action', { sessionId: session.id });
 
   const originalEvent = content.originalEvent as InboundEvent;
@@ -131,9 +154,72 @@ async function handleFileEmbeddedSuccess(content: Record<string, unknown>, sessi
     return;
   }
 
-  // If this is a background news ingestion, we do not need to re-route or print chat confirmations
+  // If this is a background news ingestion, broadcast the report index plain-text table of contents to all active sessions.
   if (originalEvent.message?.id?.startsWith('news-')) {
-    log.info('Successfully embedded background news thread', { threadId: originalEvent.message.id });
+    log.info('Successfully embedded background news thread, starting broadcast', {
+      threadId: originalEvent.message.id,
+    });
+    try {
+      const meta = JSON.parse(originalEvent.message.content || '{}') as { dateKey?: string; reportMd?: string };
+      const { reportMd } = meta;
+      if (reportMd) {
+        const broadcastMsg = formatIndexForBroadcast(reportMd);
+
+        const activeSessions = getActiveSessions();
+        const adapter = getDeliveryAdapter();
+        if (adapter) {
+          const sentTargets = new Set<string>();
+          for (const s of activeSessions) {
+            const mg = getMessagingGroup(s.messaging_group_id!);
+            if (mg) {
+              const targetKey = `${mg.channel_type}:${mg.platform_id}:${s.thread_id || ''}`;
+              if (!sentTargets.has(targetKey)) {
+                sentTargets.add(targetKey);
+                try {
+                  await adapter.deliver(
+                    mg.channel_type,
+                    mg.platform_id,
+                    s.thread_id,
+                    'chat',
+                    JSON.stringify({ text: broadcastMsg }),
+                  );
+                  log.info('Successfully broadcasted news to session', { sessionId: s.id, targetKey });
+                } catch (deliverErr) {
+                  log.error('Failed to deliver news broadcast to session', { sessionId: s.id, deliverErr });
+                }
+              }
+
+              // Record the broadcast message in the session history so Claude has context
+              try {
+                writeSessionMessage(s.agent_group_id, s.id, {
+                  id: `news-broadcast-${originalEvent.message.id}-${Date.now()}`,
+                  kind: 'chat',
+                  timestamp: new Date().toISOString(),
+                  platformId: mg.platform_id,
+                  channelType: mg.channel_type,
+                  threadId: s.thread_id || null,
+                  trigger: 0, // do not wake container
+                  content: JSON.stringify({
+                    text: broadcastMsg,
+                    sender: 'system',
+                    senderName: 'System',
+                    fromMe: true,
+                    isBotMessage: true,
+                    senderRole: 'system',
+                  }),
+                });
+              } catch (writeErr) {
+                log.error('Failed to write news broadcast to session history', { sessionId: s.id, writeErr });
+              }
+            }
+          }
+        }
+      } else {
+        log.error('Missing reportMd in news system message content');
+      }
+    } catch (err) {
+      log.error('Failed to process news broadcast', { err });
+    }
     return;
   }
 

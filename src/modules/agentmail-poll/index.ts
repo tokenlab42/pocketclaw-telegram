@@ -362,24 +362,32 @@ async function pollInbox(apiKey: string, email: string): Promise<void> {
         continue;
       }
 
-      // 5. Gather full text from the latest message in the thread (disregarding historical/stale replies)
+      // 5. Gather full text from the latest message belonging to this thread (to handle mock API bug returning all messages)
       let combinedText = '';
-      if (messages.length > 0) {
-        const msg = messages[0];
-        let fullText = msg.preview ?? '';
+      let targetMessage: Message | null = null;
+
+      for (const msg of messages) {
         try {
-          const detail = await fetchJson<{ text?: string; extracted_text?: string }>(
+          const detail = await fetchJson<{ text?: string; extracted_text?: string; thread_id?: string }>(
             `${BASE_URL}/inboxes/${encodeURIComponent(inboxId)}/messages/${encodeURIComponent(msg.message_id)}`,
             apiKey,
           );
-          fullText = detail.text || detail.extracted_text || msg.preview || '(no content)';
+          if (detail.thread_id === thread.thread_id) {
+            combinedText = detail.text || detail.extracted_text || msg.preview || '(no content)';
+            targetMessage = msg;
+            break;
+          }
         } catch (err) {
-          log.error('AgentMail news poll: failed to fetch message detail, falling back to preview', {
+          log.error('AgentMail news poll: failed to fetch message detail', {
             messageId: msg.message_id,
             err,
           });
         }
-        combinedText = fullText;
+      }
+
+      if (!targetMessage) {
+        log.warn('AgentMail news poll: thread contains no matching messages, skipping', { threadId: thread.thread_id });
+        continue;
       }
 
       // 6. Parse Media Report into Index summary and Article files
@@ -407,36 +415,25 @@ async function pollInbox(apiKey: string, email: string): Promise<void> {
         reportMd += `\n`;
       }
 
-      // 6b. Save files to global news directory and prepare attachments to embed
-      const attachments: { name: string; localPath: string }[] = [];
-      const globalNewsDir = path.join(GROUPS_DIR, 'global', 'news');
-      fs.mkdirSync(globalNewsDir, { recursive: true });
-
-      // Save report index
-      const reportFilename = `report-${dateKey}.md`;
-      fs.writeFileSync(path.join(globalNewsDir, reportFilename), reportMd, 'utf-8');
-      attachments.push({
-        name: reportFilename,
-        localPath: `global/news/${reportFilename}`,
-      });
-
-      // Save individual articles
-      for (const sec of parsed.sections) {
-        for (const art of sec.articles) {
+      // 6b. Construct JSON articles array
+      const articles = parsed.sections.flatMap((sec) =>
+        sec.articles.map((art) => {
           let artMd = `# [${sec.category}] ${art.number ? `${art.number}) ` : ''}${art.title}\n\n`;
           if (art.cleanLink) {
             artMd += `**Source:** [${art.linkText || 'Link'}](${art.cleanLink})\n\n`;
           }
           artMd += `**Content:**\n${art.description}\n`;
 
-          const artFilename = `article-${dateKey}-${art.number}.md`;
-          fs.writeFileSync(path.join(globalNewsDir, artFilename), artMd, 'utf-8');
-          attachments.push({
-            name: artFilename,
-            localPath: `global/news/${artFilename}`,
-          });
-        }
-      }
+          return {
+            number: Number(art.number),
+            title: art.title,
+            category: sec.category,
+            link: art.cleanLink || '',
+            linkText: art.linkText || '',
+            content: artMd,
+          };
+        }),
+      );
 
       // 7. Write system embedding message to the admin agent group
       // Use 'agent-shared' mode to get the primary administrative/global session of the admin agent.
@@ -448,14 +445,19 @@ async function pollInbox(apiKey: string, email: string): Promise<void> {
         kind: 'system',
         timestamp: new Date().toISOString(),
         content: JSON.stringify({
-          action: 'embed_file',
-          attachments,
+          action: 'embed_news',
           collectionId: 'news',
           originalEvent: {
             message: {
               id: `news-${thread.thread_id}`,
+              content: JSON.stringify({ dateKey, reportMd }),
             },
           },
+          report: {
+            dateKey,
+            content: reportMd,
+          },
+          articles,
         }),
         trigger: 1,
       });

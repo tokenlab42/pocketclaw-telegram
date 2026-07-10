@@ -67,47 +67,80 @@ def main():
     try:
         # Load configuration from stdin
         config = json.loads(sys.stdin.read())
+        action = config.get('action', 'embed_file')
         collection_id = config['collectionId']
         message_id = config['messageId']
-        attachments = config['attachments']
-
-        print(f"[embed_helper] Ingesting {len(attachments)} attachments for collection {collection_id}")
 
         # Connect to Chroma
         client = chromadb.HttpClient(host="host.docker.internal", port=8000)
         collection = client.get_or_create_collection(name=collection_id)
 
-        for attachment in attachments:
-            file_path = os.path.join('/workspace', attachment['localPath'])
-            if not os.path.exists(file_path):
-                print(f"[embed_helper] WARNING: File not found: {file_path}", file=sys.stderr)
-                continue
+        if action == 'embed_news':
+            report = config['report']
+            articles = config['articles']
+            print(f"[embed_helper] Ingesting news report & {len(articles)} articles into collection {collection_id}")
 
-            print(f"[embed_helper] Reading file {attachment['name']}")
-            text = extract_text_from_file(file_path)
-            chunks = chunk_text(text)
-
-            if not chunks:
-                print(f"[embed_helper] WARNING: No text chunks extracted from {attachment['name']}", file=sys.stderr)
-                continue
-
-            print(f"[embed_helper] Split {attachment['name']} into {len(chunks)} chunks. Uploading...")
-
-            ids = [f"{message_id}-{attachment['name']}-{i}" for i in range(len(chunks))]
-            documents = chunks
-            metadatas = [{
-                "source": attachment['name'],
-                "messageId": message_id,
-                "chunkIndex": i,
-                "totalChunks": len(chunks)
-            } for i in range(len(chunks))]
-
-            collection.add(
-                ids=ids,
-                documents=documents,
-                metadatas=metadatas
+            # 1. Add Report index
+            report_id = f"report-{report['dateKey']}"
+            collection.upsert(
+                ids=[report_id],
+                documents=[report['content']],
+                metadatas=[{"type": "report_index", "date": report['dateKey']}]
             )
-            print(f"[embed_helper] Successfully added {len(chunks)} chunks of {attachment['name']} to Chroma.")
+            print(f"[embed_helper] Successfully added report_index {report_id} to Chroma.")
+
+            # 2. Add individual articles
+            for art in articles:
+                art_id = f"article-{report['dateKey']}-{art['number']}"
+                collection.upsert(
+                    ids=[art_id],
+                    documents=[art['content']],
+                    metadatas=[{
+                        "type": "article",
+                        "date": report['dateKey'],
+                        "number": int(art['number']),
+                        "title": art['title'],
+                        "link": art['link'],
+                        "linkText": art['linkText'],
+                        "category": art['category']
+                    }]
+                )
+                print(f"[embed_helper] Successfully added article {art_id} to Chroma.")
+        else:
+            attachments = config['attachments']
+            print(f"[embed_helper] Ingesting {len(attachments)} attachments for collection {collection_id}")
+
+            for attachment in attachments:
+                file_path = os.path.join('/workspace', attachment['localPath'])
+                if not os.path.exists(file_path):
+                    print(f"[embed_helper] WARNING: File not found: {file_path}", file=sys.stderr)
+                    continue
+
+                print(f"[embed_helper] Reading file {attachment['name']}")
+                text = extract_text_from_file(file_path)
+                chunks = chunk_text(text)
+
+                if not chunks:
+                    print(f"[embed_helper] WARNING: No text chunks extracted from {attachment['name']}", file=sys.stderr)
+                    continue
+
+                print(f"[embed_helper] Split {attachment['name']} into {len(chunks)} chunks. Uploading...")
+
+                ids = [f"{message_id}-{attachment['name']}-{i}" for i in range(len(chunks))]
+                documents = chunks
+                metadatas = [{
+                    "source": attachment['name'],
+                    "messageId": message_id,
+                    "chunkIndex": i,
+                    "totalChunks": len(chunks)
+                } for i in range(len(chunks))]
+
+                collection.add(
+                    ids=ids,
+                    documents=documents,
+                    metadatas=metadatas
+                )
+                print(f"[embed_helper] Successfully added {len(chunks)} chunks of {attachment['name']} to Chroma.")
 
         print("[embed_helper] Embedding completion successful")
         sys.exit(0)
