@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
+import type { Mock } from 'vitest';
 import path from 'path';
 
 const TEST_DIR = '/tmp/nanoclaw-test-agentmail-poll';
@@ -21,6 +22,16 @@ const wakeContainerMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../container-runner.js', () => ({
   wakeContainer: wakeContainerMock,
 }));
+
+// Mock delivery adapter
+export const deliverMock: any = vi.fn().mockResolvedValue('plat‑msg‑id');
+vi.mock('../../delivery.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as any;
+  return {
+    ...actual,
+    getDeliveryAdapter: () => ({ deliver: deliverMock }),
+  };
+});
 
 // Mock env loader to follow vitest env stubs rather than host .env file
 vi.mock('../../env.js', () => ({
@@ -138,6 +149,7 @@ describe('AgentMail news poller', () => {
           ok: true,
           json: () =>
             Promise.resolve({
+              thread_id: 'thread-news-1',
               text: `
 CYBERSECURITY NEWS
 
@@ -166,39 +178,6 @@ The Singapore Civil Defence Force's (SCDF)...
     // Give asynchronous polling chain a brief moment to complete the details fetch
     await new Promise((r) => setTimeout(r, 200));
 
-    // Verify report index was written with decoded and cleaned links
-    const reportPath = path.join(GROUPS_DIR, 'global', 'news', 'report-2026-07-03.md');
-    expect(fs.existsSync(reportPath)).toBe(true);
-    const reportContent = fs.readFileSync(reportPath, 'utf-8');
-    expect(reportContent).toContain('# MOH Media Report (3 July 2026)');
-    expect(reportContent).toContain('## CYBERSECURITY NEWS');
-    expect(reportContent).toContain('## STANDARDS AND REGULATIONS');
-    expect(reportContent).toContain(
-      '* 1) Singapore Expands Cybersecurity Measures Amid AI-Driven Threats (OpenGov Asia, 1 Jul)',
-    );
-    expect(reportContent).toContain(
-      '* 2) Non-emergency 1777 ambulance hotline to cease from Jan 1, 2027 (ST Online, 1 Jul)',
-    );
-
-    // Verify individual article files were written
-    const art1Path = path.join(GROUPS_DIR, 'global', 'news', 'article-2026-07-03-1.md');
-    const art2Path = path.join(GROUPS_DIR, 'global', 'news', 'article-2026-07-03-2.md');
-    expect(fs.existsSync(art1Path)).toBe(true);
-    expect(fs.existsSync(art2Path)).toBe(true);
-
-    const art1Content = fs.readFileSync(art1Path, 'utf-8');
-    expect(art1Content).toContain(
-      '# [CYBERSECURITY NEWS] 1) Singapore Expands Cybersecurity Measures Amid AI-Driven Threats',
-    );
-    expect(art1Content).toContain("CSA's Singapore Cyber Landscape 2025/2026 report...");
-
-    const art2Content = fs.readFileSync(art2Path, 'utf-8');
-    expect(art2Content).toContain(
-      '# [STANDARDS AND REGULATIONS] 2) Non-emergency 1777 ambulance hotline to cease from Jan 1, 2027',
-    );
-    expect(art2Content).toContain("The Singapore Civil Defence Force's (SCDF)...");
-    expect(art2Content).not.toContain('CNA Online'); // Secondary source should be discarded
-
     // Verify database processed_email_threads row was inserted
     const row = db.prepare('SELECT * FROM processed_email_threads WHERE thread_id = ?').get('thread-news-1') as any;
     expect(row).toBeDefined();
@@ -217,12 +196,24 @@ The Singapore Civil Defence Force's (SCDF)...
     expect(sdbRow.kind).toBe('system');
 
     const content = JSON.parse(sdbRow.content);
-    expect(content.action).toBe('embed_file');
+    expect(content.action).toBe('embed_news');
     expect(content.collectionId).toBe('news');
-    expect(content.attachments).toHaveLength(3); // index report + 2 articles
-    expect(content.attachments[0].name).toBe('report-2026-07-03.md');
-    expect(content.attachments[1].name).toBe('article-2026-07-03-1.md');
-    expect(content.attachments[2].name).toBe('article-2026-07-03-2.md');
+    expect(content.report.dateKey).toBe('2026-07-03');
+    expect(content.report.content).toContain('# MOH Media Report (3 July 2026)');
+    expect(content.articles).toHaveLength(2);
+    expect(content.articles[0].number).toBe(1);
+    expect(content.articles[0].title).toBe('Singapore Expands Cybersecurity Measures Amid AI-Driven Threats');
+    expect(content.articles[0].content).toContain(
+      '# [CYBERSECURITY NEWS] 1) Singapore Expands Cybersecurity Measures Amid AI-Driven Threats',
+    );
+    expect(content.articles[0].content).toContain("CSA's Singapore Cyber Landscape 2025/2026 report...");
+    expect(content.articles[1].number).toBe(2);
+    expect(content.articles[1].title).toBe('Non-emergency 1777 ambulance hotline to cease from Jan 1, 2027');
+    expect(content.articles[1].content).toContain(
+      '# [STANDARDS AND REGULATIONS] 2) Non-emergency 1777 ambulance hotline to cease from Jan 1, 2027',
+    );
+    expect(content.articles[1].content).toContain("The Singapore Civil Defence Force's (SCDF)...");
+    expect(content.articles[1].content).not.toContain('CNA Online');
 
     // Verify wakeContainer was triggered
     expect(wakeContainerMock).toHaveBeenCalled();
@@ -277,6 +268,8 @@ The Singapore Civil Defence Force's (SCDF)...
       expect(extractReportDate('', 'FW: MOH Media Report (3 July 2026)')).toBe('3 July 2026');
       expect(extractReportDate('Subject: MOH Media Report 2 Jul 2026\nDear staff', '')).toBe('2 Jul 2026');
       expect(extractReportDate('', 'FWD: [EXTERNAL] MOH Media Report 2 Jul')).toBe('2 Jul');
+      expect(extractReportDate('', 'FW: MOH Media Report 4-6 July 2026')).toBe('6 July 2026');
+      expect(extractReportDate('', 'FW: MOH Media Report 4 - 6 July 2026')).toBe('6 July 2026');
     });
 
     it('formats date to YYYY-MM-DD', async () => {
@@ -284,6 +277,73 @@ The Singapore Civil Defence Force's (SCDF)...
       expect(formatDateToYYYYMMDD('3 July 2026')).toBe('2026-07-03');
       expect(formatDateToYYYYMMDD('2 Jul 2026')).toBe('2026-07-02');
       expect(formatDateToYYYYMMDD('2 Jul')).toBe(`${new Date().getFullYear()}-07-02`);
+    });
+  });
+
+  describe('News Broadcast Delivery', () => {
+    it('successfully delivers plain-text news broadcast on file_embedded_success', async () => {
+      const { handleFileEmbeddedSuccess } = await import('../file-memory/index.js');
+      const { deliverMock } = await import('./index.test.js');
+      const { getDb } = await import('../../db/connection.js');
+
+      // 1. Setup mock session and messaging group
+      const database = getDb();
+      database
+        .prepare(
+          `
+        INSERT OR IGNORE INTO messaging_groups (id, channel_type, platform_id, name, is_group, created_at)
+        VALUES ('mg-broadcast-test', 'telegram', '12345', 'Test Chat', 0, '2026-07-07')
+      `,
+        )
+        .run();
+      database
+        .prepare(
+          `
+        INSERT OR IGNORE INTO sessions (id, agent_group_id, messaging_group_id, status, created_at)
+        VALUES ('session-broadcast-test', 'ag-admin', 'mg-broadcast-test', 'active', '2026-07-07')
+      `,
+        )
+        .run();
+
+      // 2. Setup mock report index data
+      const reportMd =
+        '# MOH Media Report (6 July 2026)\n\n## CYBERSECURITY NEWS\n\n* 1) Singapore Expands Cybersecurity (OpenGov Asia, 1 Jul)\n';
+
+      // 3. Simulate file_embedded_success system event
+      const simulatedContent = {
+        originalEvent: {
+          platformId: '12345',
+          channelType: 'telegram',
+          threadId: null,
+          message: {
+            id: 'news-thread-123',
+            content: JSON.stringify({ dateKey: '2026-07-06', reportMd }),
+          },
+        },
+      };
+
+      const mockSession = {
+        id: 'session-broadcast-test',
+        agent_group_id: 'ag-admin',
+        messaging_group_id: 'mg-broadcast-test',
+      } as any;
+
+      deliverMock.mockClear();
+      await handleFileEmbeddedSuccess(simulatedContent, mockSession);
+
+      // 4. Assert delivery occurred
+      expect(deliverMock).toHaveBeenCalledTimes(1);
+      const [channelType, platformId, threadId, kind, payloadStr] = deliverMock.mock.calls[0];
+      expect(channelType).toBe('telegram');
+      expect(platformId).toBe('12345');
+      expect(threadId).toBeNull();
+      expect(kind).toBe('chat');
+
+      const payload = JSON.parse(payloadStr);
+      expect(payload.text).toContain('*MOH Media Report (6 July 2026)*');
+      expect(payload.text).toContain('*CYBERSECURITY NEWS*');
+      expect(payload.text).toContain('* 1) Singapore Expands Cybersecurity (OpenGov Asia, 1 Jul)');
+      expect(payload.text).toContain('Reply with a number if you want to read the full article.');
     });
   });
 });
