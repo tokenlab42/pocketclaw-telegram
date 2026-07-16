@@ -19,6 +19,7 @@ import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js
 import { migration018 } from './018-file-memory-messages.js';
 import { migration019 } from './019-haiku-for-all-tasks.js';
 import { migration020 } from './020-processed-emails.js';
+import { migration022 } from './022-onboarding-codes.js';
 
 export interface Migration {
   version: number;
@@ -45,6 +46,7 @@ const migrations: Migration[] = [
   migration018,
   migration019,
   migration020,
+  migration022,
 ];
 
 export function runMigrations(db: Database.Database): void {

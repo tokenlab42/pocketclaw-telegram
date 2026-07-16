@@ -11,6 +11,10 @@ store/
 data/
 logs/
 
+# Generated onboarding-code distribution list — contains real, redeemable
+# codes plus which phone numbers redeemed them. Never commit.
+onboarding-codes.txt
+
 # Groups - per-installation state, not tracked
 groups/*
 

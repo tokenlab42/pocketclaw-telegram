@@ -59,6 +59,7 @@ import { getChannelAdapter } from '../../channels/channel-registry.js';
 import { CHROMA_MCP_SERVER, chromaInstructions } from '../../chroma-onboarding.js';
 import { addMcpServer } from '../../db/container-configs.js';
 import { createMessagingGroupAgent, getMessagingGroup, updateMessagingGroup } from '../../db/messaging-groups.js';
+import { exportCodesToFile, findUnusedCode, markCodeUsed } from '../../db/onboarding-codes.js';
 import { getDeliveryAdapter } from '../../delivery.js';
 import { readEnvFile } from '../../env.js';
 import { initGroupFilesystem } from '../../group-init.js';
@@ -253,8 +254,41 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
   const originMg = getMessagingGroup(messagingGroupId);
   const isDm = event.threadId === null && !event.message?.isGroup && originMg?.is_group !== 1;
 
-  // ── 3. DMs: auto-provision a personal agent — no approval card needed ──
+  // ── 3. DMs: auto-provision a personal agent — gated by onboarding code ──
+  //
+  // Whitelist gate: a brand-new DM only gets a bot if its first message is
+  // "hi <5-char code>" and that code is real and unused. Anything else
+  // (bare "hi", wrong code, unrelated text) is silently ignored — no bot,
+  // no reply, no admin ping. This replaces open enrollment with a
+  // self-service code redemption, without reintroducing an admin-approval
+  // step for the 200-learner rollout.
   if (isDm) {
+    let messageText = '';
+    try {
+      const parsed = JSON.parse(event.message.content) as Record<string, unknown>;
+      messageText = typeof parsed.text === 'string' ? parsed.text : '';
+    } catch {
+      /* non-critical */
+    }
+
+    const codeMatch = messageText.match(/^hi[\s,!.]*([a-z0-9]{5})\b/i);
+    if (!codeMatch) {
+      log.debug('DM ignored — no onboarding code in first message', { messagingGroupId });
+      return;
+    }
+
+    const userId = `${event.channelType}:${event.platformId}`;
+    const codeRow = findUnusedCode(codeMatch[1]);
+    if (!codeRow || !markCodeUsed(codeMatch[1], userId)) {
+      // Code doesn't exist, was already redeemed, or lost a race to another
+      // message claiming it first — silently ignore either way.
+      log.debug('DM ignored — invalid or already-used onboarding code', { messagingGroupId });
+      return;
+    }
+    // Keep the distribution file in sync immediately — no separate manual
+    // export/refresh step needed after a redemption.
+    exportCodesToFile();
+
     inProgressProvisioning.add(messagingGroupId);
     try {
       let senderName: string | undefined;
@@ -271,7 +305,6 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
       const agentName = `${displayName}'s Assistant`;
       const ag = provisionPersonalAgent(agentName);
 
-      const userId = `${event.channelType}:${event.platformId}`;
       const now = new Date().toISOString();
 
       addMember({ user_id: userId, agent_group_id: ag.id, added_by: null, added_at: now });
