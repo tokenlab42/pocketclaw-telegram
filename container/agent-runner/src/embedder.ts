@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import { writeMessageOut } from './db/messages-out.js';
 
 interface EmbedFileOptions {
-  attachments: Array<{
+  attachments?: Array<{
     name: string;
     localPath: string;
     size?: number;
@@ -10,13 +10,16 @@ interface EmbedFileOptions {
   }>;
   collectionId: string;
   originalEvent: any;
+  action?: 'embed_file' | 'embed_news';
+  report?: any;
+  articles?: any[];
 }
 
 export async function embedFile(opts: EmbedFileOptions): Promise<void> {
-  const { attachments, collectionId, originalEvent } = opts;
+  const { attachments, collectionId, originalEvent, action = 'embed_file', report, articles } = opts;
   const messageId = originalEvent.message.id;
 
-  console.log(`[embedder] Launching embedding process for ${attachments.length} attachment(s)...`);
+  console.log(`[embedder] Launching embedding process for action=${action} collection=${collectionId}...`);
 
   return new Promise<void>((resolve, reject) => {
     // Spawn the Python process with uv run, resolving dependencies on the fly
@@ -67,9 +70,12 @@ export async function embedFile(opts: EmbedFileOptions): Promise<void> {
 
     // Write the configuration payload to the script's stdin
     const payload = JSON.stringify({
+      action,
       collectionId,
       messageId,
       attachments,
+      report,
+      articles,
     });
 
     child.stdin.write(payload);

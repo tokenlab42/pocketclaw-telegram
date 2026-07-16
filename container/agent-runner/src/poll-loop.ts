@@ -107,12 +107,12 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   while (true) {
     const allPending = getPendingMessages(isFirstPoll);
 
-    // Check if there is an embed_file system action
-    const embedFileMsg = allPending.find((m) => {
+    // Check if there is an embed_file or embed_news system action
+    const embedActionMsg = allPending.find((m) => {
       if (m.kind === 'system') {
         try {
           const parsed = JSON.parse(m.content);
-          return parsed.action === 'embed_file';
+          return parsed.action === 'embed_file' || parsed.action === 'embed_news';
         } catch {
           return false;
         }
@@ -120,21 +120,24 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       return false;
     });
 
-    if (embedFileMsg) {
-      log('Intercepted embed_file system action');
-      markProcessing([embedFileMsg.id]);
+    if (embedActionMsg) {
+      log('Intercepted embed system action');
+      markProcessing([embedActionMsg.id]);
       let parsed: any = null;
       try {
-        parsed = JSON.parse(embedFileMsg.content);
+        parsed = JSON.parse(embedActionMsg.content);
         const { embedFile } = await import('./embedder.js');
         await embedFile({
+          action: parsed.action,
           attachments: parsed.attachments,
           collectionId: parsed.collectionId,
           originalEvent: parsed.originalEvent,
+          report: parsed.report,
+          articles: parsed.articles,
         });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        log(`embed_file failed: ${errMsg}`);
+        log(`embed system action failed: ${errMsg}`);
         if (parsed && parsed.originalEvent) {
           try {
             const { writeMessageOut } = await import('./db/messages-out.js');
@@ -153,7 +156,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
           }
         }
       } finally {
-        markCompleted([embedFileMsg.id]);
+        markCompleted([embedActionMsg.id]);
       }
       isFirstPoll = false;
       continue;
@@ -403,11 +406,11 @@ async function processQuery(
           return;
         }
 
-        const hasEmbedFile = pending.some((m) => {
+        const hasEmbedAction = pending.some((m) => {
           if (m.kind === 'system') {
             try {
               const parsed = JSON.parse(m.content);
-              return parsed.action === 'embed_file';
+              return parsed.action === 'embed_file' || parsed.action === 'embed_news';
             } catch {
               return false;
             }
@@ -415,8 +418,8 @@ async function processQuery(
           return false;
         });
 
-        if (hasEmbedFile) {
-          log('Pending embed_file system action — ending stream so outer loop can process');
+        if (hasEmbedAction) {
+          log('Pending embed system action — ending stream so outer loop can process');
           endedForCommand = true;
           query.end();
           return;
