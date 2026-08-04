@@ -52,7 +52,7 @@ import {
 } from './db/pending-channel-approvals.js';
 import { deletePendingSenderApproval, getPendingSenderApproval } from './db/pending-sender-approvals.js';
 import { grantRole, hasAdminPrivilege } from './db/user-roles.js';
-import { getUser, upsertUser } from './db/users.js';
+import { extractAndUpsertUser, getUser } from './db/users.js';
 import { requestSenderApproval } from './sender-approval.js';
 import { ensureUserDm } from './user-dm.js';
 
@@ -65,44 +65,6 @@ interface PendingNameInput {
   dmPlatformId: string;
 }
 const awaitingNameInput = new Map<string, PendingNameInput>();
-
-function extractAndUpsertUser(event: InboundEvent): string | null {
-  let content: Record<string, unknown>;
-  try {
-    content = JSON.parse(event.message.content) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-
-  // chat-sdk-bridge serializes author info as a nested `author.userId` and
-  // does NOT populate top-level `senderId`. Older adapters (v1, native) put
-  // `senderId` or `sender` directly at the top level. Check all three.
-  const senderIdField = typeof content.senderId === 'string' ? content.senderId : undefined;
-  const senderField = typeof content.sender === 'string' ? content.sender : undefined;
-  const author =
-    typeof content.author === 'object' && content.author !== null
-      ? (content.author as Record<string, unknown>)
-      : undefined;
-  const authorUserId = typeof author?.userId === 'string' ? (author.userId as string) : undefined;
-  const senderName =
-    (typeof content.senderName === 'string' ? content.senderName : undefined) ??
-    (typeof author?.fullName === 'string' ? (author.fullName as string) : undefined) ??
-    (typeof author?.userName === 'string' ? (author.userName as string) : undefined);
-
-  const rawHandle = senderIdField ?? senderField ?? authorUserId;
-  if (!rawHandle) return null;
-
-  const userId = rawHandle.includes(':') ? rawHandle : `${event.channelType}:${rawHandle}`;
-  if (!getUser(userId)) {
-    upsertUser({
-      id: userId,
-      kind: event.channelType,
-      display_name: senderName ?? null,
-      created_at: new Date().toISOString(),
-    });
-  }
-  return userId;
-}
 
 function safeParseContent(raw: string): { text?: string; sender?: string; senderId?: string } {
   try {

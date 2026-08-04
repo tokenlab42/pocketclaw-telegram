@@ -50,6 +50,15 @@ export interface ChatSdkBridgeConfig {
   concurrency?: ConcurrencyStrategy;
   /** Bot token for authenticating forwarded Gateway events (required for interaction handling). */
   botToken?: string;
+  /**
+   * Override for the bridge's registry channelType, otherwise defaulted to
+   * `adapter.name`. Needed when the underlying Chat SDK adapter package
+   * hardcodes a `name` that collides with another already-registered channel
+   * (e.g. `@chat-adapter/whatsapp` uses `'whatsapp'`, the same channelType the
+   * native Baileys adapter registers — without an override the two adapters
+   * would overwrite each other in `activeAdapters`, keyed by channelType).
+   */
+  channelType?: string;
   /** Platform-specific reply context extraction. */
   extractReplyContext?: ReplyContextExtractor;
   /**
@@ -121,6 +130,10 @@ export function splitForLimit(text: string, limit: number): string[] {
 
 export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter {
   const { adapter } = config;
+  // Resolved once and reused everywhere the bridge would otherwise fall back to
+  // the raw Chat SDK adapter's hardcoded `name` (registry channelType, webhook
+  // route) — see the `channelType` field's doc comment for why this can differ.
+  const resolvedChannelType = config.channelType ?? adapter.name;
   const transformText = (t: string): string => (config.transformOutboundText ? config.transformOutboundText(t) : t);
   let chat: Chat;
   let state: SqliteStateAdapter;
@@ -194,7 +207,7 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
 
   const bridge: ChannelAdapter = {
     name: adapter.name,
-    channelType: adapter.name,
+    channelType: resolvedChannelType,
     supportsThreads: config.supportsThreads,
 
     async setup(hostConfig: ChannelSetup) {
@@ -203,7 +216,7 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       state = new SqliteStateAdapter();
 
       chat = new Chat({
-        adapters: { [adapter.name]: adapter },
+        adapters: { [resolvedChannelType]: adapter },
         userName: adapter.userName || 'NanoClaw',
         concurrency: config.concurrency ?? 'concurrent',
         state,
@@ -359,7 +372,7 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         log.info('Gateway listener started', { adapter: adapter.name });
       } else {
         // Non-gateway adapters (Slack, Teams, GitHub, etc.) — register on the shared webhook server
-        registerWebhookAdapter(chat, adapter.name);
+        registerWebhookAdapter(chat, resolvedChannelType);
       }
 
       log.info('Chat SDK bridge initialized', { adapter: adapter.name });

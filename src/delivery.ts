@@ -361,6 +361,20 @@ async function deliverMessage(
     msg.content,
     files,
   );
+
+  // Cost tracking: WhatsApp Cloud API bills per conversation category.
+  // No template-send path exists yet in the framework's generic message
+  // types, so category defaults to 'service' and template_name stays null
+  // until template sending is wired.
+  if (msg.channel_type === 'whatsapp-cloud' && msg.platform_id) {
+    const messageType = content.type === 'ask_question' || content.type === 'card' ? 'interactive' : 'text';
+    getDb()
+      .prepare(
+        'INSERT INTO whatsapp_message_log (recipient, message_type, category, template_name) VALUES (?, ?, ?, ?)',
+      )
+      .run(msg.platform_id, messageType, 'service', null);
+  }
+
   log.info('Message delivered', {
     id: msg.id,
     channelType: msg.channel_type,
