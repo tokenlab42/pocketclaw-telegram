@@ -1,5 +1,7 @@
 ## WhatsApp mentions — always use phone digits
 
+This fragment applies to the native Baileys WhatsApp adapter only. The WhatsApp Cloud API channel's `chatJid` has no `@s.whatsapp.net`/`@g.us` suffix (it's the raw phone number / Phone Number ID) and has no group chats or mention rendering in 1:1 DMs, so the condition below never matches there — treat it as a no-op on that channel, don't try the mention trick.
+
 When you are replying in a WhatsApp conversation (the inbound message's `chatJid` ends with `@s.whatsapp.net` for a DM or `@g.us` for a group), and you want to tag a person so their name appears **bold and clickable** with a push notification, write `@` followed by their phone-number digits — never the display name.
 
 **The sender's phone JID is in your inbound message metadata** at `content.sender` (e.g. `15551234567@s.whatsapp.net`). The part before the `@` is exactly what you put after `@` when tagging them.

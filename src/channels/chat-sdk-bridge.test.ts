@@ -65,6 +65,26 @@ describe('createChatSdkBridge', () => {
     expect(bridge.openDM).toBeUndefined();
   });
 
+  it('defaults channelType to the underlying adapter name', () => {
+    const bridge = createChatSdkBridge({
+      adapter: stubAdapter({ name: 'whatsapp' }),
+      supportsThreads: false,
+    });
+    expect(bridge.channelType).toBe('whatsapp');
+  });
+
+  it('overrides channelType when the adapter package name would collide with another channel', () => {
+    // @chat-adapter/whatsapp hardcodes name: 'whatsapp', same as the native Baileys
+    // adapter — whatsapp-cloud.ts must be able to opt into a distinct channelType so
+    // activeAdapters (keyed by channelType) doesn't have one overwrite the other.
+    const bridge = createChatSdkBridge({
+      adapter: stubAdapter({ name: 'whatsapp' }),
+      supportsThreads: false,
+      channelType: 'whatsapp-cloud',
+    });
+    expect(bridge.channelType).toBe('whatsapp-cloud');
+  });
+
   it('exposes openDM when the underlying adapter has one, and delegates directly', async () => {
     const openDMCalls: string[] = [];
     const bridge = createChatSdkBridge({

@@ -69,6 +69,7 @@ import type { AgentGroup } from '../../types.js';
 import { pickApprovalDelivery, pickApprover } from '../approvals/primitive.js';
 import { createPendingChannelApproval, hasInFlightChannelApproval } from './db/pending-channel-approvals.js';
 import { addMember } from './db/agent-group-members.js';
+import { extractAndUpsertUser } from './db/users.js';
 import { grantRole, hasAdminPrivilege } from './db/user-roles.js';
 import { routeInbound } from '../../router.js';
 import { provisionSubAgents } from '../sub-agents/provision.js';
@@ -222,7 +223,11 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
           priority: 0,
           created_at: now,
         });
-        const userId = `${event.channelType}:${event.platformId}`;
+        const userId = extractAndUpsertUser(event);
+        if (!userId) {
+          log.warn('Admin whitelist: matched but sender identity could not be resolved', { senderPhone });
+          return;
+        }
         addMember({ user_id: userId, agent_group_id: adminAgent.id, added_by: null, added_at: now });
         grantRole({ user_id: userId, role: 'admin', agent_group_id: adminAgent.id, granted_by: null, granted_at: now });
         log.info('Admin whitelist: auto-connected to admin agent', {
@@ -277,7 +282,11 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
       return;
     }
 
-    const userId = `${event.channelType}:${event.platformId}`;
+    const userId = extractAndUpsertUser(event);
+    if (!userId) {
+      log.debug('DM ignored — sender identity could not be resolved', { messagingGroupId });
+      return;
+    }
     const codeRow = findUnusedCode(codeMatch[1]);
     if (!codeRow || !markCodeUsed(codeMatch[1], userId)) {
       // Code doesn't exist, was already redeemed, or lost a race to another
@@ -307,6 +316,9 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
 
       const now = new Date().toISOString();
 
+      // extractAndUpsertUser already created the users row above (needed
+      // there anyway to resolve userId) — addMember's FK on users(id) is
+      // satisfied regardless of whether this sender had prior history.
       addMember({ user_id: userId, agent_group_id: ag.id, added_by: null, added_at: now });
 
       const mgaId = `mga-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
